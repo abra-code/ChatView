@@ -1,0 +1,15 @@
+{
+  "originHash" : "193c778784c21658e1a00cd31848437b6ecdc4ecac515c0631319c0467a05cc6",
+  "pins" : [
+    {
+      "identity" : "asyncimagecache",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/abra-code/AsyncImageCache",
+      "state" : {
+        "branch" : "main",
+        "revision" : "cb3655e4ef60c7b24a74a95a789d9b79c37e600c"
+      }
+    }
+  ],
+  "version" : 3
+}
