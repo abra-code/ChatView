@@ -26,14 +26,10 @@ let package = Package(
         .library(name: "ChatViewOpenAI", targets: ["ChatViewOpenAI"]),
     ],
     dependencies: [
-        // Sibling standalone components, referenced by local filesystem path while the
-        // component repos are developed side by side; switch to the github URLs
-        // (github.com/abra-code, branch/tag) once the repos are pushed. AsyncImageCache
-        // stays a URL dependency: RichText's own manifest declares it by URL, and SPM
-        // requires a single location per package identity - a path override here would
-        // conflict with RichText's declaration.
-        .package(path: "../RichText"),          // renders message Markdown
-        .package(path: "../DiffView"),          // renders tool-card diffs
+        // Sibling standalone components (github.com/abra-code). No released tags yet, so
+        // pin the branch; switch to `from: "x.y.z"` once they are tagged.
+        .package(url: "https://github.com/abra-code/RichText", branch: "main"),          // renders message Markdown
+        .package(url: "https://github.com/abra-code/DiffView", branch: "main"),          // renders tool-card diffs
         .package(url: "https://github.com/abra-code/AsyncImageCache", branch: "main"),   // CachedImage for image items
     ],
     targets: [

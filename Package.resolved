@@ -1,5 +1,5 @@
 {
-  "originHash" : "193c778784c21658e1a00cd31848437b6ecdc4ecac515c0631319c0467a05cc6",
+  "originHash" : "731007c7d80df1a5c0b39fe28df1a576500740a84995f3840f76557bb7f60424",
   "pins" : [
     {
       "identity" : "asyncimagecache",
@@ -8,6 +8,24 @@
       "state" : {
         "branch" : "main",
         "revision" : "cb3655e4ef60c7b24a74a95a789d9b79c37e600c"
+      }
+    },
+    {
+      "identity" : "diffview",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/abra-code/DiffView",
+      "state" : {
+        "branch" : "main",
+        "revision" : "8a7a956dd95e83437f656c514b67faec80558111"
+      }
+    },
+    {
+      "identity" : "richtext",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/abra-code/RichText",
+      "state" : {
+        "branch" : "main",
+        "revision" : "57d78c653f50beeda388f021c904f73e1d916ae6"
       }
     }
   ],
