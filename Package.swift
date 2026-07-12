@@ -26,11 +26,10 @@ let package = Package(
         .library(name: "ChatViewOpenAI", targets: ["ChatViewOpenAI"]),
     ],
     dependencies: [
-        // Sibling standalone components (github.com/abra-code). No released tags yet, so
-        // pin the branch; switch to `from: "x.y.z"` once they are tagged.
-        .package(url: "https://github.com/abra-code/RichText", branch: "main"),          // renders message Markdown
-        .package(url: "https://github.com/abra-code/DiffView", branch: "main"),          // renders tool-card diffs
-        .package(url: "https://github.com/abra-code/AsyncImageCache", branch: "main"),   // CachedImage for image items
+        // Sibling standalone components (github.com/abra-code), consumed as versioned releases.
+        .package(url: "https://github.com/abra-code/RichText", from: "0.1.0"),          // renders message Markdown
+        .package(url: "https://github.com/abra-code/DiffView", from: "0.1.0"),          // renders tool-card diffs
+        .package(url: "https://github.com/abra-code/AsyncImageCache", from: "0.1.0"),   // CachedImage for image items
     ],
     targets: [
         .target(
