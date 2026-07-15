@@ -42,6 +42,8 @@ final class ACPPrimingTests: XCTestCase {
     ///   nocap       - initialize WITHOUT the sessionPrime capability
     ///   slow-prompt - park session/prompt; resolve it (stopReason cancelled) on session/cancel
     ///   busy-once   - fail the FIRST session/prime with -32003, succeed after
+    ///   slow-prime  - stall session/prime for 400ms before answering, holding a prompt that
+    ///                 chains behind it inside the pre-dispatch gap for the whole window
     private static let fakeAgentScript = """
         import sys, json, time
         journal = open(sys.argv[1], "a", buffering=1)
@@ -70,6 +72,10 @@ final class ACPPrimingTests: XCTestCase {
                 if behavior == "busy-once" and primes_failed == 0:
                     primes_failed = 1
                     out({"jsonrpc": "2.0", "id": rid, "error": {"code": -32003, "message": "busy"}})
+                elif behavior == "slow-prime":
+                    time.sleep(0.4)
+                    out({"jsonrpc": "2.0", "id": rid,
+                         "result": {"primed": len(msg.get("params", {}).get("messages", []))}})
                 else:
                     out({"jsonrpc": "2.0", "id": rid,
                          "result": {"primed": len(msg.get("params", {}).get("messages", []))}})
@@ -215,6 +221,75 @@ final class ACPPrimingTests: XCTestCase {
         XCTAssertLessThan(promptIndex, cancelIndex)
         XCTAssertLessThan(cancelIndex, primeIndex,
                           "the prime goes out only after session/cancel (and the turn's resolution)")
+        await transport.stop()
+    }
+
+    // MARK: - Stop inside the pre-dispatch gap
+
+    /// A turn does not reach the wire the instant it is submitted: startTurn's task first
+    /// awaits any in-flight prime. Stop pressed inside that window used to notify
+    /// session/cancel for a turn the agent had never heard of (a no-op), after which the
+    /// prompt dispatched anyway and ran to completion - the user's Stop did nothing and the
+    /// composer stayed streaming out a full answer. The suppressed turn must never reach
+    /// the wire at all.
+    func testCancelBeforeDispatchSuppressesThePrompt() async throws {
+        let transport = try makeTransport(behavior: "slow-prime")
+        await transport.start()
+        await waitForJournal { $0.contains("session/new") }
+
+        // The prime parks agent-side for 400ms; a prompt submitted now chains behind it and
+        // sits in the pre-dispatch gap for that whole window.
+        transport.primeHistory([message("u1", role: .local, "resumed context")])
+        await transport.send(.prompt(text: "a question the user immediately regrets"))
+        await transport.send(.cancel)
+
+        // Well past the prime's release: if the prompt were going to dispatch, it would have.
+        try await Task.sleep(nanoseconds: 900_000_000)
+        let methods = journal().map(\.method)
+        XCTAssertFalse(methods.contains("session/prompt"),
+                       "a turn cancelled before it reached the wire must never be dispatched")
+        XCTAssertFalse(methods.contains("session/cancel"),
+                       "there is nothing to cancel agent-side for a turn it never received")
+        await transport.stop()
+    }
+
+    /// The other half of the latch: once the turn IS on the wire, Stop must still reach the
+    /// agent as session/cancel. Guards against "fixing" the gap by suppressing every cancel.
+    func testCancelAfterDispatchStillNotifiesTheAgent() async throws {
+        let transport = try makeTransport(behavior: "slow-prompt")
+        await transport.start()
+        await waitForJournal { $0.contains("session/new") }
+
+        await transport.send(.prompt(text: "long generation"))
+        await waitForJournal { $0.contains("session/prompt") }   // provably dispatched
+        await transport.send(.cancel)
+        await waitForJournal { $0.contains("session/cancel") }
+
+        XCTAssertTrue(journal().map(\.method).contains("session/cancel"),
+                      "a dispatched turn is cancelled agent-side, as before")
+        await transport.stop()
+    }
+
+    /// A cancelled turn must not wedge the transport: the NEXT prompt dispatches normally.
+    /// The latch is per-generation, so it can never leak onto a later turn.
+    func testPromptAfterASuppressedTurnStillDispatches() async throws {
+        let transport = try makeTransport(behavior: "slow-prime")
+        await transport.start()
+        await waitForJournal { $0.contains("session/new") }
+
+        transport.primeHistory([message("u1", role: .local, "resumed context")])
+        await transport.send(.prompt(text: "regretted"))
+        await transport.send(.cancel)
+        await waitForJournal { $0.contains("session/prime") }
+
+        await transport.send(.prompt(text: "actually asked"))
+        await waitForJournal { $0.contains("session/prompt") }
+
+        let prompts = journal().filter { $0.method == "session/prompt" }
+        XCTAssertEqual(prompts.count, 1, "exactly the second prompt reaches the agent")
+        let blocks = (prompts.first?.params["prompt"] as? [[String: Any]]) ?? []
+        XCTAssertEqual(blocks.first?["text"] as? String, "actually asked",
+                       "the suppressed turn's text must not be what got sent")
         await transport.stop()
     }
 

@@ -72,6 +72,15 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
     private var hasPrimedOnce = false                 // a non-empty prime was enqueued (an empty reset is meaningful after this)
     private var hasEverPrompted = false               // a turn ran (an empty reset is meaningful after this too)
     private var turnGeneration = 0                    // guards finishTurn's promptTask clear against a newer registration
+    // Stop during the PRE-DISPATCH gap. A registered turn does not reach the wire
+    // immediately: startTurn's task first awaits any in-flight prime, so there is a window
+    // where the turn exists to the client but the agent has never heard of it - a
+    // session/cancel notify in that window cancels nothing, and the turn then dispatches
+    // and runs to completion despite the user pressing Stop. These two fields close it:
+    // the cancel LATCHES against the current generation, and the task CLAIMS the dispatch
+    // under the lock, so exactly one of the two wins.
+    private var cancelledGeneration = 0               // newest generation cancelled by the client
+    private var promptDispatched = false              // the current turn's session/prompt reached the wire
 
     /// `transport` config: `command` (argv array, required), `cwd` (string, defaults to
     /// the host's current directory), `mcpServers` (array of ACP server declarations,
@@ -195,11 +204,23 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
             startTurn(prompt: text)
 
         case .cancel:
-            let (connection, sessionID) = lock.withLock { (self.connection, self.sessionID) }
-            guard let connection, let sessionID else {
+            let target = lock.withLock { () -> (connection: ACPConnection, sessionID: String, notifyAgent: Bool)? in
+                guard let connection, let sessionID else { return nil }
+                // Latch the Stop against the turn that is current RIGHT NOW. If that turn
+                // has not claimed its dispatch yet, startTurn's task will see this and
+                // suppress the request instead of racing it onto the wire.
+                cancelledGeneration = turnGeneration
+                // Only tell the agent about a turn it actually knows about. With a turn
+                // registered but not dispatched there is nothing to cancel agent-side (the
+                // suppression below ends it); with no turn at all, notify exactly as before.
+                return (connection, sessionID, promptTask == nil || promptDispatched)
+            }
+            guard let target else {
                 return
             }
-            connection.notify("session/cancel", ["sessionId": sessionID])
+            if target.notifyAgent {
+                target.connection.notify("session/cancel", ["sessionId": target.sessionID])
+            }
             // Per ACP, a cancelled turn must also resolve any pending permission
             // requests with the cancelled outcome; the prompt then returns
             // stopReason "cancelled", which ends the turn.
@@ -296,8 +317,14 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
             // to resolve (the store has already cleared its streaming UI state). The notify
             // goes out after this lock releases; ordering is safe because the prime is sent
             // only after the cancelled prompt's RESPONSE arrives.
-            if inFlightTurn != nil, let connection {
-                return (connection, sessionID)
+            if inFlightTurn != nil {
+                // Same latch as send(.cancel): a turn still inside the pre-dispatch gap must
+                // be suppressed, not merely notified about - otherwise the abandoned
+                // conversation's prompt would still reach the agent, and the prime behind it
+                // would wait out a turn the user already navigated away from.
+                cancelledGeneration = turnGeneration
+                if !promptDispatched { return nil }
+                if let connection { return (connection, sessionID) }
             }
             return nil
         }
@@ -424,8 +451,17 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
             hasEverPrompted = true
             turnGeneration += 1
             let generation = turnGeneration
+            promptDispatched = false
             promptTask = Task { [weak self] in
                 await inFlightPrime?.value
+                // Claim the dispatch, or lose to a Stop that landed during the prime await
+                // (or before this task was even scheduled). self stays weakly held across
+                // the request below, as before.
+                guard let claimed = self?.claimDispatch(generation: generation) else { return }
+                guard claimed else {
+                    self?.finishTurn(stopReason: "cancelled", generation: generation)
+                    return
+                }
                 do {
                     let result = try await connection.request("session/prompt", [
                         "sessionId": sessionID,
@@ -438,6 +474,20 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
                     self?.finishTurn(stopReason: "error", generation: generation)
                 }
             }
+        }
+    }
+
+    /// Claims the wire for this turn, or concedes it to a Stop that already landed. The
+    /// latch check and the claim are ONE lock acquisition (the invariant that makes the
+    /// pre-dispatch gap safe): a concurrent `.cancel` therefore either sees an unclaimed
+    /// turn and lets this suppress it, or sees `promptDispatched` and notifies the agent -
+    /// the interleaving where both conclude "the other side will handle it", leaving a Stop
+    /// that stops nothing, cannot occur. Returns false when this turn must not dispatch.
+    private func claimDispatch(generation: Int) -> Bool {
+        lock.withLock {
+            if cancelledGeneration >= generation { return false }
+            promptDispatched = true
+            return true
         }
     }
 
