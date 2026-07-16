@@ -587,6 +587,15 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
         guard !text.isEmpty else {
             return
         }
+        // Whitespace-only text must not OPEN a new bubble - it would render as an empty assistant
+        // message. Models routinely emit blank text at a segment boundary (the newline between
+        // </think> and a tool call, or leading whitespace before a <think> block), which arrives here
+        // as a whitespace-only chunk with no message open. Drop those. Once a bubble IS open, blank
+        // text flows through normally so inter-word spacing inside a message is never lost.
+        let hasOpenSegment = lock.withLock { openMessageID != nil && openMessageRole == role }
+        if !hasOpenSegment, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return
+        }
         lock.withLock { openThoughtID = nil }
         let (itemID, isNew) = lock.withLock { () -> (String, Bool) in
             if let open = openMessageID, openMessageRole == role {

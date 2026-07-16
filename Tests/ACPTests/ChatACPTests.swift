@@ -311,6 +311,57 @@ final class ACPDemuxTests: XCTestCase {
         XCTAssertNotEqual(firstID, secondID, "a tool call must split message segments")
     }
 
+    func testWhitespaceOnlyChunkDoesNotOpenEmptyBubble() async throws {
+        // Reproduces the empty-assistant-bubble bug: a model emits its reasoning, then a blank line
+        // (the newline between </think> and the tool call reaches the transport as a whitespace-only
+        // agent_message_chunk), then calls a tool, then answers. The blank chunk must NOT open a
+        // message segment - only the thought, the tool call, and the real answer should appear.
+        let transport = try makeTransport()
+        transport.handleNotification("session/update", chunk("agent_thought_chunk", "reasoning"))
+        transport.handleNotification("session/update", chunk("agent_message_chunk", "\n\n"))
+        transport.handleNotification("session/update", update(["sessionUpdate": "tool_call", "toolCallId": "t1", "title": "get_current_time"]))
+        transport.handleNotification("session/update", chunk("agent_message_chunk", "The time is 10:36 PM."))
+        await transport.stop()
+
+        var events: [ChatEvent] = []
+        for await event in transport.events {
+            events.append(event)
+        }
+        // No messageStart/messageDelta for the blank chunk: thought, tool call, then the real answer.
+        guard events.count == 4,
+              case .thoughtDelta(_, "reasoning") = events[0],
+              case .toolCall(let call) = events[1],
+              case .messageStart(let msgID, .agent) = events[2],
+              case .messageDelta(msgID, "The time is 10:36 PM.") = events[3] else {
+            return XCTFail("unexpected event sequence: \(events)")
+        }
+        XCTAssertEqual(call.id, "t1")
+        XCTAssertFalse(events.contains { if case .messageDelta(_, "\n\n") = $0 { return true } else { return false } },
+                       "the whitespace chunk must never reach the transcript")
+    }
+
+    func testWhitespaceWithinOpenMessageIsPreserved() async throws {
+        // The guard must only suppress a whitespace chunk that would OPEN a bubble; once a message is
+        // open, a blank chunk between words must still flow so spacing is not lost ("Hi" + " " + "there").
+        let transport = try makeTransport()
+        transport.handleNotification("session/update", chunk("agent_message_chunk", "Hi"))
+        transport.handleNotification("session/update", chunk("agent_message_chunk", " "))
+        transport.handleNotification("session/update", chunk("agent_message_chunk", "there"))
+        await transport.stop()
+
+        var events: [ChatEvent] = []
+        for await event in transport.events {
+            events.append(event)
+        }
+        guard events.count == 4,
+              case .messageStart(let id, .agent) = events[0],
+              case .messageDelta(id, "Hi") = events[1],
+              case .messageDelta(id, " ") = events[2],
+              case .messageDelta(id, "there") = events[3] else {
+            return XCTFail("unexpected event sequence: \(events)")
+        }
+    }
+
     func testThoughtsSegmentSeparatelyFromMessages() async throws {
         let transport = try makeTransport()
         transport.handleNotification("session/update", chunk("agent_thought_chunk", "thinking"))
