@@ -165,7 +165,7 @@ public struct ChatView: View {
                             }
                         } else {
                             ForEach(store.items) { item in
-                                row(for: item).id(item.id)
+                                diagnosedRow(for: item)
                             }
                         }
                         if isAwaitingReply && awaitingLongEnough {
@@ -175,6 +175,9 @@ public struct ChatView: View {
                     }
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    // Scroll-invariant space the row diagnostics record their frames in (a name
+                    // registration only; no layout effect when diagnostics are off).
+                    .coordinateSpace(name: ChatViewDiagnostics.transcriptSpace)
                 }
                 .trackScrolledToBottom($isPinnedToBottom, threshold: Self.bottomThreshold)
                 .onChange(of: store.items) { old, new in
@@ -260,6 +263,14 @@ public struct ChatView: View {
         } else {
             proxy.scrollTo(bottomAnchor, anchor: .bottom)
         }
+    }
+
+    /// A transcript row with the layout-shift geometry recorder attached (a no-op unless
+    /// diagnostics are enabled; see ChatViewDiagnostics.swift).
+    private func diagnosedRow(for item: ChatItem) -> some View {
+        row(for: item)
+            .chatRowDiagnostics(id: item.id, descriptor: ChatViewDiagnostics.describe(item))
+            .id(item.id)
     }
 
     @ViewBuilder
