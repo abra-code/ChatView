@@ -30,6 +30,9 @@ public struct ChatView: View {
     // and a "jump to latest" pill appears; returning to the bottom or tapping the pill re-pins.
     @State private var isPinnedToBottom = true
     private static let bottomThreshold: CGFloat = 24   // within this many points of the bottom counts as pinned
+    // Turns each scroll / layout sample into a pin action (see ChatScrollPin.swift). A reference type in
+    // @State so updating its running sample every frame does NOT redraw the view - only a pin flip does.
+    @State private var pinTracker = ChatScrollPinTracker()
     // The awaiting-reply spinner shows only if the first token has not arrived within this delay, so a
     // fast reply never flashes it. Driven by the body's .task(id:) tied to the awaiting condition.
     @State private var awaitingLongEnough = false
@@ -179,7 +182,12 @@ public struct ChatView: View {
                     // registration only; no layout effect when diagnostics are off).
                     .coordinateSpace(name: ChatViewDiagnostics.transcriptSpace)
                 }
-                .trackScrolledToBottom($isPinnedToBottom, threshold: Self.bottomThreshold)
+                .trackScrolledToBottom { distanceFromBottom, contentHeight, containerHeight in
+                    updatePin(distanceFromBottom: distanceFromBottom,
+                              contentHeight: contentHeight,
+                              containerHeight: containerHeight,
+                              proxy: proxy)
+                }
                 .onChange(of: store.items) { old, new in
                     // A prepended history page: restore the scroll to the anchored former-top item so the
                     // view does not jump (non-animated, same layout pass). Takes precedence over the pin.
@@ -191,6 +199,9 @@ public struct ChatView: View {
                     // Otherwise follow new content ONLY while pinned; reading back must not fight streaming.
                     // The follow is NON-animated so the geometry detector never observes the mid-animation
                     // state (content grown, offset lagging) and spuriously unpins during fast streaming.
+                    // (updatePin also chases on the geometry change this triggers - a growth that arrives
+                    // without an items change, e.g. an async row remeasure, is caught there; this is the
+                    // immediate, data-driven chase.)
                     if isPinnedToBottom {
                         scrollToBottom(proxy, animated: false)
                     }
@@ -200,6 +211,15 @@ public struct ChatView: View {
                 }
                 .onAppear {
                     // Loaded/restored transcripts start pinned at the latest entry.
+                    scrollToBottom(proxy, animated: false)
+                }
+                .onChange(of: store.transcriptGeneration) { _, _ in
+                    // A conversation was loaded in place (the transcript was replaced wholesale). The
+                    // pin tracker's prior sample belongs to the old conversation, so reset it (else its
+                    // stale heights net a bogus scroll-up and unpin), and start the new one pinned at
+                    // the latest entry - onAppear does not refire for an in-place content swap.
+                    pinTracker.reset()
+                    isPinnedToBottom = true
                     scrollToBottom(proxy, animated: false)
                 }
                 .onChange(of: scrollRequest) { _, target in
@@ -222,7 +242,9 @@ public struct ChatView: View {
     }
 
     /// The bottom-of-content marker: the scroll anchor plus, for the pre-macOS-15 fallback path, a
-    /// GeometryReader that reports whether the bottom is on screen (compared against the viewport).
+    /// GeometryReader that reports the transcript geometry the pin update needs - how far the bottom is
+    /// below the fold, plus the content and container heights so a growth/resize can be told from a
+    /// user scroll (the same three values `onScrollGeometryChange` yields directly on macOS 15+).
     private func bottomSentinel(viewport: GeometryProxy) -> some View {
         Color.clear
             .frame(height: 1)
@@ -230,8 +252,15 @@ public struct ChatView: View {
             .background(
                 GeometryReader { marker in
                     Color.clear.preference(
-                        key: ScrolledToBottomKey.self,
-                        value: marker.frame(in: .global).maxY <= viewport.frame(in: .global).maxY + Self.bottomThreshold)
+                        key: SentinelMetricsKey.self,
+                        value: SentinelMetrics(
+                            // Points of content below the fold: marker sits at the very bottom of the
+                            // content, so its global maxY beyond the viewport's is the overshoot.
+                            distanceFromBottom: marker.frame(in: .global).maxY - viewport.frame(in: .global).maxY,
+                            // The marker's y in the scroll-invariant content space is the total content
+                            // height (it is the last element); grows as messages stream in.
+                            contentHeight: marker.frame(in: .named(ChatViewDiagnostics.transcriptSpace)).maxY,
+                            containerHeight: viewport.size.height))
                 }
             )
     }
@@ -253,6 +282,27 @@ public struct ChatView: View {
         .help("Jump to latest")
         .padding(12)
         .transition(.opacity)
+    }
+
+    /// Reconciles the pin with the transcript geometry on every scroll / layout change, via the pure
+    /// ChatScrollPinTracker. The core distinction it draws: content growing (streaming) or the view
+    /// resizing both push the bottom off screen but are NOT the user reading back, so they chase the
+    /// new bottom rather than unpin; only a genuine user scroll-up releases the pin. `distanceFromBottom`
+    /// is points of content below the fold (<= threshold means the latest entry is on screen).
+    private func updatePin(distanceFromBottom: CGFloat, contentHeight: CGFloat,
+                           containerHeight: CGFloat, proxy: ScrollViewProxy) {
+        switch pinTracker.decide(isPinned: isPinnedToBottom, distanceFromBottom: distanceFromBottom,
+                                 contentHeight: contentHeight, containerHeight: containerHeight,
+                                 threshold: Self.bottomThreshold) {
+        case .ignore, .keep:
+            break
+        case .unpin:
+            isPinnedToBottom = false
+        case .repin:
+            isPinnedToBottom = true
+        case .chase:
+            scrollToBottom(proxy, animated: false)
+        }
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
@@ -396,6 +446,9 @@ public struct ChatView: View {
     }
 
     private func requestScroll(to id: String) {
+        // Jumping to a quoted message moves off the bottom: release the pin (and show the "jump to
+        // latest" pill) so a live streaming turn does not immediately yank the reader back down.
+        isPinnedToBottom = false
         scrollRequest = id
         highlightedItemID = id
         Task { @MainActor in
@@ -698,14 +751,22 @@ public struct ChatView: View {
 
 // MARK: - Scroll-to-bottom tracking (P0-4)
 
-/// Whether the transcript's bottom is on screen. Emitted by the bottom sentinel on the pre-macOS-15
-/// fallback path; the last (bottom-most) sentinel wins. Defaults to FALSE ("not at bottom") so that
-/// when the LazyVStack de-materializes the off-screen sentinel (the user scrolled far up), the
-/// preference collapses to the fail-safe direction - the pill stays, auto-scroll stays suspended -
-/// rather than re-pinning and yanking the reader back on the next streaming delta.
-private struct ScrolledToBottomKey: PreferenceKey {
-    static let defaultValue = false
-    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+/// The transcript geometry the pin update consumes on the pre-macOS-15 fallback path (the macOS 15+
+/// path gets the same three values straight from `onScrollGeometryChange`). Emitted by the bottom
+/// sentinel; the last (bottom-most) sentinel wins. The default encodes "the bottom is far off screen":
+/// when the LazyVStack de-materializes the off-screen sentinel (the user scrolled far up, so the view
+/// is already unpinned), the pin update sees a huge distance and simply stays unpinned - it never
+/// re-pins and yanks the reader back on the next streaming delta.
+private struct SentinelMetrics: Equatable, Sendable {
+    var distanceFromBottom: CGFloat
+    var contentHeight: CGFloat
+    var containerHeight: CGFloat
+}
+
+private struct SentinelMetricsKey: PreferenceKey {
+    static let defaultValue = SentinelMetrics(distanceFromBottom: .greatestFiniteMagnitude,
+                                              contentHeight: 0, containerHeight: 0)
+    static func reduce(value: inout SentinelMetrics, nextValue: () -> SentinelMetrics) {
         value = nextValue()
     }
 }
@@ -721,20 +782,27 @@ private struct ScrolledNearTopKey: PreferenceKey {
 }
 
 private extension View {
-    /// Drives `isAtBottom` from the scroll position: the precise `onScrollGeometryChange` on
-    /// macOS 15+ / iOS 18+ / visionOS 2+, and the `ScrolledToBottomKey` preference (emitted by the
-    /// bottom sentinel) on the older baseline.
+    /// Reports the transcript geometry the pin update needs on every scroll / layout change: distance
+    /// of the bottom below the fold, plus the content and container heights (so a growth / resize can
+    /// be told from a user scroll). Uses the precise `onScrollGeometryChange` on macOS 15+ / iOS 18+ /
+    /// visionOS 2+, and the `SentinelMetricsKey` preference (emitted by the bottom sentinel) otherwise.
     @ViewBuilder
-    func trackScrolledToBottom(_ isAtBottom: Binding<Bool>, threshold: CGFloat) -> some View {
+    func trackScrolledToBottom(
+        update: @escaping (_ distanceFromBottom: CGFloat, _ contentHeight: CGFloat, _ containerHeight: CGFloat) -> Void
+    ) -> some View {
         if #available(macOS 15.0, iOS 18.0, visionOS 2.0, *) {
-            onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - threshold
-            } action: { _, atBottom in
-                isAtBottom.wrappedValue = atBottom
+            onScrollGeometryChange(for: SentinelMetrics.self) { geometry in
+                SentinelMetrics(
+                    distanceFromBottom: geometry.contentSize.height
+                        - (geometry.contentOffset.y + geometry.containerSize.height),
+                    contentHeight: geometry.contentSize.height,
+                    containerHeight: geometry.containerSize.height)
+            } action: { _, metrics in
+                update(metrics.distanceFromBottom, metrics.contentHeight, metrics.containerHeight)
             }
         } else {
-            onPreferenceChange(ScrolledToBottomKey.self) { atBottom in
-                isAtBottom.wrappedValue = atBottom
+            onPreferenceChange(SentinelMetricsKey.self) { metrics in
+                update(metrics.distanceFromBottom, metrics.contentHeight, metrics.containerHeight)
             }
         }
     }

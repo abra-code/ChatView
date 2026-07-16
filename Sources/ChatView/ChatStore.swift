@@ -58,6 +58,7 @@ enum ChatContextState: Equatable {
 final class ChatStore: ObservableObject {
 
     @Published private(set) var items: [ChatItem] = []
+    @Published private(set) var transcriptGeneration = 0   // bumped when the transcript is replaced wholesale (a conversation loaded in place), so the view can reset scroll/pin state for the new conversation
     @Published private(set) var isStreaming = false       // a reply turn is in flight
     @Published private(set) var awaitingReply = false      // a prompt was submitted but no reply event has arrived yet - the "connecting / thinking" gap before the first token. The view shows a spinner while awaitingReply && !isStreaming (isStreaming only flips true on the first streamed event, not at submit).
     @Published private(set) var isConfigured = false      // a viable transport has been built from states["config"]; the composer gates on this
@@ -980,6 +981,7 @@ final class ChatStore: ObservableObject {
     private func applyLoadedTranscript(_ transcript: ChatTranscript) {
         let turnWasInFlight = isStreaming || awaitingReply
         items = transcript.items
+        transcriptGeneration &+= 1
         usage = transcript.usage
         plan = transcript.plan
         title = transcript.title
