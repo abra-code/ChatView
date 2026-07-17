@@ -1,0 +1,1 @@
+{"items":[{"message":{"id":"th1","role":"agent","text":"Thinking hard..."},"type":"thought"},{"toolCall":{"contentText":"done","id":"tc1","kind":"read","status":"completed","title":"Read"},"type":"toolCall"},{"message":{"id":"m1","role":"agent","text":"Answer."},"type":"message"}],"version":1}

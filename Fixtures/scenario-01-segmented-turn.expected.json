@@ -1,0 +1,1 @@
+{"items":[{"message":{"id":"m1","role":"agent","text":"Let me look."},"type":"message"},{"toolCall":{"contentText":"found 3 results","id":"tc1","kind":"search","status":"completed","title":"Search"},"type":"toolCall"},{"message":{"id":"m2","role":"agent","text":"Here are the results."},"type":"message"}],"version":1}

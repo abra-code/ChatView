@@ -1,0 +1,2 @@
+{"event":"messageReceived","message":{"id":"m1","reactions":[{"count":1,"emoji":"👍","mine":false}],"role":"remote","senderID":"alex","text":"nice"}}
+{"event":"reactionsChanged","itemID":"m1","reactions":[{"count":2,"emoji":"❤","mine":true},{"count":1,"emoji":"👍","mine":false}]}

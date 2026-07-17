@@ -1,0 +1,1 @@
+{"items":[{"memberEvent":{"id":"ev1","kind":"joined","subjectName":"Sam","timestamp":"2026-07-10T15:00:00Z"},"type":"memberEvent"},{"callEvent":{"durationSeconds":120,"id":"call1","isVideo":false,"kind":"completed","timestamp":"2026-07-10T15:01:00Z"},"type":"callEvent"}],"version":2}

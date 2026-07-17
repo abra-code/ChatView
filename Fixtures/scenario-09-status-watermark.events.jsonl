@@ -1,0 +1,6 @@
+{"event":"messageReceived","message":{"id":"o1","role":"local","status":"sending","text":"one"}}
+{"event":"messageReceived","message":{"id":"o2","role":"local","status":"failed","text":"two"}}
+{"event":"messageReceived","message":{"id":"o3","role":"local","status":"sent","text":"three"}}
+{"event":"messageStatusChanged","itemID":"o1","status":"sent"}
+{"event":"messageStatusWatermark","status":"delivered","upToItemID":"o3"}
+{"event":"messageStatusWatermark","status":"sent","upToItemID":"o3"}

@@ -1,0 +1,3 @@
+{"event":"messageDelta","itemID":"a1","text":"Implicit "}
+{"event":"messageDelta","itemID":"a1","text":"open."}
+{"event":"messageEnd","itemID":"a1","stopReason":"end_turn"}

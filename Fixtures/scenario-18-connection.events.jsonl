@@ -1,0 +1,3 @@
+{"event":"connectionStateChanged","state":"connecting"}
+{"event":"messageReceived","message":{"id":"m1","role":"remote","senderID":"alex","text":"back online"}}
+{"event":"connectionStateChanged","state":"connected"}

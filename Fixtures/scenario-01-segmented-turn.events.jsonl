@@ -1,0 +1,9 @@
+{"event":"messageStart","itemID":"m1","role":"agent"}
+{"event":"messageDelta","itemID":"m1","text":"Let me "}
+{"event":"messageDelta","itemID":"m1","text":"look."}
+{"event":"messageEnd","itemID":"m1"}
+{"event":"toolCall","toolCall":{"contentText":"","id":"tc1","kind":"search","status":"pending","title":"Search"}}
+{"event":"toolCallUpdate","update":{"contentText":"found 3 results","id":"tc1","status":"completed"}}
+{"event":"messageStart","itemID":"m2","role":"agent"}
+{"event":"messageDelta","itemID":"m2","text":"Here are the results."}
+{"event":"messageEnd","itemID":"m2","stopReason":"end_turn"}

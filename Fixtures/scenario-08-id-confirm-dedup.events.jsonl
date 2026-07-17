@@ -1,0 +1,5 @@
+{"event":"messageReceived","message":{"id":"local-1","role":"local","senderID":"me","status":"sending","text":"ping"}}
+{"event":"messageIDConfirmed","localID":"local-1","serverID":"srv-1"}
+{"event":"messageReceived","message":{"id":"local-2","role":"local","senderID":"me","status":"sending","text":"pong"}}
+{"event":"messageReceived","message":{"id":"srv-2","role":"local","senderID":"me","status":"sent","text":"pong"}}
+{"event":"messageIDConfirmed","localID":"local-2","serverID":"srv-2"}

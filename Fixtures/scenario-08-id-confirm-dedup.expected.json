@@ -1,0 +1,1 @@
+{"items":[{"message":{"id":"srv-1","role":"local","senderID":"me","status":"sending","text":"ping"},"type":"message"},{"message":{"id":"srv-2","role":"local","senderID":"me","status":"sent","text":"pong"},"type":"message"}],"version":2}

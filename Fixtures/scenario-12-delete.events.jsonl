@@ -1,0 +1,2 @@
+{"event":"messageReceived","message":{"id":"m1","role":"remote","senderID":"alex","text":"oops secret"}}
+{"event":"messageDeleted","itemID":"m1"}

@@ -1,0 +1,1 @@
+{"items":[{"message":{"id":"m1","role":"agent","text":"working"},"type":"message"},{"id":"error-1","text":"stream failed","type":"error"}],"version":1}

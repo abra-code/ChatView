@@ -1,0 +1,4 @@
+{"event":"plan","plan":[{"content":"first","id":0,"priority":"high","status":"completed"},{"content":"second","id":1,"status":"in_progress"}]}
+{"event":"usage","usage":{"costAmount":0.01,"costCurrency":"USD","size":8000,"used":100}}
+{"event":"plan","plan":[{"content":"first","id":0,"priority":"high","status":"completed"},{"content":"second","id":1,"status":"completed"},{"content":"third","id":2,"priority":"low","status":"pending"}]}
+{"event":"usage","usage":{"costAmount":0.029999999999999999,"costCurrency":"USD","size":8000,"used":250}}

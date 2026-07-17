@@ -1,0 +1,6 @@
+{"event":"toolCall","toolCall":{"contentText":"","id":"tc1","kind":"delete","status":"pending","title":"Delete file"}}
+{"event":"permissionRequest","request":{"id":"perm1","options":[{"id":"o1","kind":"allow_once","name":"Allow"},{"id":"o2","kind":"reject_once","name":"Reject"}],"title":"Allow delete?","toolCallID":"tc1"}}
+{"event":"toolCallUpdate","update":{"contentText":"deleted","id":"tc1","status":"completed"}}
+{"event":"messageStart","itemID":"m1","role":"agent"}
+{"event":"messageDelta","itemID":"m1","text":"Done."}
+{"event":"messageEnd","itemID":"m1","stopReason":"end_turn"}

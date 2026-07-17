@@ -1,0 +1,4 @@
+{"event":"messageStart","itemID":"m1","role":"agent"}
+{"event":"messageDelta","itemID":"m1","text":"working"}
+{"event":"messageEnd","itemID":"m1"}
+{"event":"error","message":"stream failed","recoverable":true}

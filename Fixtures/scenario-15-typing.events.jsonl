@@ -1,0 +1,3 @@
+{"event":"messageReceived","message":{"id":"m1","role":"remote","senderID":"alex","senderName":"Alex","text":"hi"}}
+{"event":"typingChanged","isTyping":true,"senderID":"alex","senderName":"Alex"}
+{"event":"typingChanged","isTyping":false,"senderID":"alex","senderName":"Alex"}

@@ -1,0 +1,2 @@
+{"event":"memberEvent","memberEvent":{"id":"ev1","kind":"joined","subjectName":"Sam","timestamp":"2026-07-10T15:00:00Z"}}
+{"callEvent":{"durationSeconds":120,"id":"call1","isVideo":false,"kind":"completed","timestamp":"2026-07-10T15:01:00Z"},"event":"callEvent"}

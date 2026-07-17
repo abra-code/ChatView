@@ -1,0 +1,2 @@
+{"event":"fileAdded","file":{"id":"f1","kind":"file","name":"doc.pdf","progress":0.25,"role":"remote","senderID":"alex","senderName":"Alex","sizeBytes":1024,"timestamp":"2026-07-10T15:00:00Z","transferStatus":"transferring","url":"https://example.test/doc.pdf"}}
+{"event":"fileProgress","itemID":"f1","progress":1,"transferStatus":"completed"}

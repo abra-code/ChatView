@@ -1,0 +1,1 @@
+{"items":[{"toolCall":{"contentText":"deleted","id":"tc1","kind":"delete","status":"completed","title":"Delete file"},"type":"toolCall"},{"message":{"id":"m1","role":"agent","text":"Done."},"type":"message"}],"version":1}

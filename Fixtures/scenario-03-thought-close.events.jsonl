@@ -1,0 +1,6 @@
+{"event":"thoughtDelta","itemID":"th1","text":"Thinking "}
+{"event":"thoughtDelta","itemID":"th1","text":"hard..."}
+{"event":"toolCall","toolCall":{"contentText":"done","id":"tc1","kind":"read","status":"completed","title":"Read"}}
+{"event":"messageStart","itemID":"m1","role":"agent"}
+{"event":"messageDelta","itemID":"m1","text":"Answer."}
+{"event":"messageEnd","itemID":"m1","stopReason":"end_turn"}

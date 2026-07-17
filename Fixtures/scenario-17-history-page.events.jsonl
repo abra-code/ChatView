@@ -1,0 +1,2 @@
+{"event":"messageReceived","message":{"id":"cur1","role":"remote","senderID":"alex","text":"current","timestamp":"2026-07-10T15:00:00Z"}}
+{"event":"historyPage","hasMore":false,"items":[{"message":{"id":"old1","role":"remote","senderID":"alex","text":"older 1","timestamp":"2026-07-09T15:00:00Z"},"type":"message"},{"message":{"id":"old2","role":"local","senderID":"me","text":"older 2","timestamp":"2026-07-09T15:01:00Z"},"type":"message"}]}

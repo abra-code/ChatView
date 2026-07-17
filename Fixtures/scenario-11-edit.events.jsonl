@@ -1,0 +1,2 @@
+{"event":"messageReceived","message":{"id":"m1","role":"remote","senderID":"alex","text":"typo heer"}}
+{"editedAt":"2026-07-10T15:05:00Z","event":"messageEdited","itemID":"m1","newText":"typo here"}
