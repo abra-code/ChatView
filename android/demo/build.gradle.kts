@@ -47,6 +47,10 @@ kotlin {
 dependencies {
     implementation(project(":chatview"))
 
+    // The demo builds the operational config / restored transcript as kotlinx JSON (buildJsonObject, parseToJsonElement)
+    // before handing them to ChatConfiguration / the content source. Runtime lib only - the demo declares no
+    // @Serializable types, so it needs no serialization compiler plugin.
+    implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
