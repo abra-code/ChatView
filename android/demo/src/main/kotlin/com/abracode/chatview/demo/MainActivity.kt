@@ -14,10 +14,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.abracode.chatview.CHATVIEW_MODULE_SCAFFOLD
+import com.abracode.chatview.ChatConfiguration
 
 /**
- * Stage A2 demo shell. It exercises the Compose toolchain end to end and depends on :chatview so the composite
+ * Stage A2/A3 demo shell. It exercises the Compose toolchain end to end and depends on :chatview so the composite
  * build (ChatView includeBuild RichText + AsyncImageCache) is proven to resolve. A8 replaces this with the real
  * People / Group / ReadOnly screens wiring the ChatView composable.
  */
@@ -38,9 +38,9 @@ private fun DemoShell() {
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(text = "ChatView Demo", style = MaterialTheme.typography.titleLarge)
-                Text(text = "Stage A2 scaffold - screens land in A8.", style = MaterialTheme.typography.bodyMedium)
-                // Touch a :chatview symbol so the composite dependency is a compile-time fact, not just config.
-                Text(text = CHATVIEW_MODULE_SCAFFOLD, style = MaterialTheme.typography.labelSmall)
+                Text(text = "Stage A3 pure-logic port - screens land in A8.", style = MaterialTheme.typography.bodyMedium)
+                // Touch a real :chatview type so the composite dependency is a compile-time fact, not just config.
+                Text(text = "placeholder: ${ChatConfiguration().placeholder}", style = MaterialTheme.typography.labelSmall)
             }
         }
     }
