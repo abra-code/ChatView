@@ -14,6 +14,10 @@ package com.abracode.chatview
 // plain read-only properties here (A5 is pure logic); A6 wraps the same surface in Compose snapshot state without
 // changing this class's public shape or mutation code. The scheduler is injectable for a virtual clock.
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -74,34 +78,36 @@ internal class ChatStore(
 ) {
     private val scheduler: ChatScheduler = scheduler ?: RealChatScheduler(scope)
 
-    // --- Published render model (read-only to callers). Backed by plain fields in A5; A6 swaps to snapshot state.
-    private val _items = mutableListOf<ChatItem>()
+    // --- Published render model, backed by Compose snapshot state so the ChatView composable recomposes on every
+    // mutation. The mutation code below is identical to a plain-List backing (SnapshotStateList is a MutableList);
+    // the A5 unit tests read these same getters and pass unchanged (snapshot reads/writes work outside composition).
+    private val _items = mutableStateListOf<ChatItem>()
     val items: List<ChatItem> get() = _items
-    var transcriptGeneration = 0; private set    // bumped when the transcript is replaced wholesale (view resets scroll/pin)
-    var isStreaming = false; private set          // a reply turn is in flight
-    var awaitingReply = false; private set        // a prompt was submitted but no reply event has arrived yet
-    var isConfigured = false; private set         // a viable transport was built from states["config"]; the composer gates on this
-    private val _pendingPermissions = mutableListOf<PermissionRequest>()
+    var transcriptGeneration by mutableStateOf(0); private set    // bumped when the transcript is replaced wholesale (view resets scroll/pin)
+    var isStreaming by mutableStateOf(false); private set         // a reply turn is in flight
+    var awaitingReply by mutableStateOf(false); private set       // a prompt was submitted but no reply event has arrived yet
+    var isConfigured by mutableStateOf(false); private set        // a viable transport was built from states["config"]; the composer gates on this
+    private val _pendingPermissions = mutableStateListOf<PermissionRequest>()
     val pendingPermissions: List<PermissionRequest> get() = _pendingPermissions   // FIFO; the card shows the head
-    var plan: List<PlanEntry> = emptyList(); private set        // the agent's current plan (whole-list replace)
-    var usage: UsageInfo? = null; private set                   // latest token/cost status, when reported
-    var configOptions: List<SessionConfigOption> = emptyList(); private set   // model/mode/... advertised at session start
-    var availableCommands: List<SlashCommand> = emptyList(); private set      // the agent's slash commands (composer menu)
-    var contextState: ChatContextState = ChatContextState.SYNCED; private set // does the agent context match the display
-    var draft: String = ""
+    var plan by mutableStateOf<List<PlanEntry>>(emptyList()); private set         // the agent's current plan (whole-list replace)
+    var usage by mutableStateOf<UsageInfo?>(null); private set                    // latest token/cost status, when reported
+    var configOptions by mutableStateOf<List<SessionConfigOption>>(emptyList()); private set   // model/mode/... advertised at session start
+    var availableCommands by mutableStateOf<List<SlashCommand>>(emptyList()); private set      // the agent's slash commands (composer menu)
+    var contextState by mutableStateOf(ChatContextState.SYNCED); private set      // does the agent context match the display
+    var draft by mutableStateOf("")
 
     // Person-to-person (v2) surfaces the view observes.
-    var participants: List<Participant> = emptyList(); private set            // group roster
-    private val _typingParticipants = mutableListOf<TypingParticipant>()
+    var participants by mutableStateOf<List<Participant>>(emptyList()); private set  // group roster
+    private val _typingParticipants = mutableStateListOf<TypingParticipant>()
     val typingParticipants: List<TypingParticipant> get() = _typingParticipants  // who is currently typing
-    var hasEarlier: Boolean = true; private set                              // false once a history page reports no more
-    var isLoadingEarlier: Boolean = false; private set                       // a history page is in flight
-    var connectionState: ChatConnectionState = ChatConnectionState.CONNECTING; private set  // link state (reportsConnectionState transports)
+    var hasEarlier by mutableStateOf(true); private set                          // false once a history page reports no more
+    var isLoadingEarlier by mutableStateOf(false); private set                   // a history page is in flight
+    var connectionState by mutableStateOf(ChatConnectionState.CONNECTING); private set  // link state (reportsConnectionState transports)
 
     /** A participant currently shown in the typing indicator. `id` is the sender key; `name` labels the row. */
     data class TypingParticipant(val id: String, val name: String?)
 
-    var title: String? = null; private set    // app-owned session label, passed through the transcript
+    var title by mutableStateOf<String?>(null); private set    // app-owned session label, passed through the transcript
 
     private var transport: ChatTransport? = null
     private var eventJob: Job? = null
