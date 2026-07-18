@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -51,6 +52,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -124,9 +126,11 @@ internal fun DualTranscriptRow(ctx: DualRowContext, actions: DualRowActions, hig
 // --- Shared dual skeleton. ------------------------------------------------------------------------------------
 
 /**
- * The leading / trailing bubble skeleton: a min-gutter spacer on the near side (own messages) or an avatar gutter
- * (incoming, when avatars are shown), the middle column (sender label, bubble, reactions, caption), and the
- * far-side min-gutter spacer.
+ * The leading / trailing bubble skeleton. A sender label (first of an incoming run) sits above a bottom-aligned
+ * avatar + bubble row - the avatar meets the bubble's BOTTOM edge, never sinking to the reactions / caption below
+ * it - and the caption (last of a run) sits underneath, indented to line up with the bubble. A reaction, when
+ * present, overlays the bubble's top-OUTER corner (Apple-style), decoupled from the bottom caption stack so it
+ * never collides with the time / delivery status (which live on the inner / trailing side of an own message).
  */
 @Composable
 private fun DualRowScaffold(
@@ -138,39 +142,71 @@ private fun DualRowScaffold(
 ) {
     val isSelf = ctx.isSelf
     val info = ctx.info
-    Row(
+    val showAvatars = actions.config.showAvatars
+    // The incoming avatar gutter (avatar 28 + 6 gap); the sender label and caption indent by it so they line up
+    // with the bubble instead of the avatar. Own rows and no-avatar configs have no gutter.
+    val contentIndent = if (showAvatars && !isSelf) 34.dp else 0.dp
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (isSelf) Arrangement.End else Arrangement.Start,
-        verticalAlignment = Alignment.Bottom,
+        horizontalAlignment = if (isSelf) Alignment.End else Alignment.Start,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        if (isSelf) {
-            Spacer(Modifier.weight(1f, fill = false).widthIn(min = 40.dp))
-        } else if (actions.config.showAvatars) {
-            if (info.isLastInRun) {
-                AvatarView(ctx.senderName, ctx.avatarURL, 28.dp)
-            } else {
-                Spacer(Modifier.width(28.dp).height(1.dp))
-            }
+        if (!isSelf && info.isFirstInRun && actions.showsSenderNames && !ctx.senderName.isNullOrEmpty()) {
+            Text(
+                ctx.senderName,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = contentIndent + 4.dp, end = 4.dp),
+            )
         }
-        Column(
-            modifier = Modifier.widthIn(max = actions.maxBubbleWidth),
-            horizontalAlignment = if (isSelf) Alignment.End else Alignment.Start,
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = if (isSelf) Arrangement.End else Arrangement.spacedBy(6.dp, Alignment.Start),
+            verticalAlignment = Alignment.Bottom,
         ) {
-            if (!isSelf && info.isFirstInRun && actions.showsSenderNames && !ctx.senderName.isNullOrEmpty()) {
-                Text(
-                    ctx.senderName,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 4.dp),
-                )
+            if (isSelf) {
+                Spacer(Modifier.weight(1f, fill = false).widthIn(min = 40.dp))
+            } else if (showAvatars) {
+                if (info.isLastInRun) {
+                    AvatarView(ctx.senderName, ctx.avatarURL, 28.dp)
+                } else {
+                    Spacer(Modifier.width(28.dp).height(1.dp))
+                }
             }
-            bubble()
-            reactions?.invoke()
-            if (info.isLastInRun) caption?.invoke()
+            Box(modifier = Modifier.widthIn(max = actions.maxBubbleWidth)) {
+                bubble()
+                if (reactions != null) {
+                    // Overlapping badge on the bubble's top-outer corner (trailing for incoming, leading for own),
+                    // lifted onto a surface pill so it reads above the bubble. matchParentSize sizes this layer to the
+                    // bubble WITHOUT driving the Box's own size, so a reaction pill wider than a short bubble does not
+                    // grow the Box and shove the badge / bubble off-corner - TopEnd / TopStart pin to the bubble's real
+                    // corner, matching SwiftUI's .overlay (which never affects the base geometry). offset() is
+                    // placement-only, so the avatar still meets the bubble's bottom edge.
+                    Box(modifier = Modifier.matchParentSize()) {
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = MaterialTheme.colorScheme.surface,
+                            shadowElevation = 3.dp,
+                            modifier = Modifier
+                                .align(if (isSelf) Alignment.TopStart else Alignment.TopEnd)
+                                .offset(x = if (isSelf) (-8).dp else 8.dp, y = (-10).dp),
+                        ) {
+                            Box(modifier = Modifier.padding(horizontal = 2.dp, vertical = 1.dp)) { reactions() }
+                        }
+                    }
+                }
+            }
+            if (!isSelf) {
+                Spacer(Modifier.weight(1f, fill = false).widthIn(min = 40.dp))
+            }
         }
-        if (!isSelf) {
-            Spacer(Modifier.weight(1f, fill = false).widthIn(min = 40.dp))
+        if (info.isLastInRun && caption != null) {
+            Box(
+                modifier = Modifier.fillMaxWidth().padding(start = contentIndent),
+                contentAlignment = if (isSelf) Alignment.CenterEnd else Alignment.CenterStart,
+            ) {
+                caption()
+            }
         }
     }
 }

@@ -158,37 +158,50 @@ private struct DualMessageRow: View {
     private var isTombstone: Bool { message.deleted == true }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 6) {
-            if isSelf {
-                Spacer(minLength: 40)
-            } else if config.showAvatars {
-                avatarGutter
+        // The incoming avatar gutter (avatar 28 + 6 spacing); the sender label and caption indent by it so they
+        // line up with the bubble instead of the avatar. Own rows and no-avatar configs have no gutter.
+        let contentIndent: CGFloat = (config.showAvatars && !isSelf) ? 34 : 0
+        VStack(alignment: isSelf ? .trailing : .leading, spacing: 2) {
+            if !isSelf, isFirstInRun, showsSenderNames, let name = ctx.senderName, !name.isEmpty {
+                Text(name)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, contentIndent)
+                    .padding(.horizontal, 4)
             }
-
-            VStack(alignment: isSelf ? .trailing : .leading, spacing: 2) {
-                if !isSelf, isFirstInRun, showsSenderNames, let name = ctx.senderName, !name.isEmpty {
-                    Text(name)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 4)
+            // Avatar + bubble in a bottom-aligned row so the incoming avatar meets the bubble's BOTTOM edge (not
+            // the caption below). The reaction overlays the bubble's top-OUTER corner (Apple-style), decoupled
+            // from the bottom caption so it never collides with the time / delivery status.
+            HStack(alignment: .bottom, spacing: 6) {
+                if isSelf {
+                    Spacer(minLength: 40)
+                } else if config.showAvatars {
+                    avatarGutter
                 }
                 bubble
-                // Chips are an affordance, so they are gated on canReact (features AND capabilities),
-                // never on data presence alone - a seeded / inbound message can carry reaction data
-                // even when the document/transport does not enable reactions.
-                if actions.canReact, let reactions = message.reactions, !reactions.isEmpty {
-                    ReactionChips(reactions: reactions, alignSelf: isSelf) { emoji in
-                        actions.toggleReaction(message.id, emoji)
+                    // Chips are an affordance, so they are gated on canReact (features AND capabilities), never on
+                    // data presence alone - a seeded / inbound message can carry reaction data even when the
+                    // document/transport does not enable reactions. The overlay is applied to the hugging bubble
+                    // BEFORE the maxWidth frame, so the badge pins to the bubble's real corner (not the frame edge).
+                    .overlay(alignment: isSelf ? .topLeading : .topTrailing) {
+                        if actions.canReact, let reactions = message.reactions, !reactions.isEmpty {
+                            ReactionChips(reactions: reactions, alignSelf: isSelf) { emoji in
+                                actions.toggleReaction(message.id, emoji)
+                            }
+                            .padding(2)
+                            .background(.background, in: Capsule())
+                            .shadow(radius: 1.5, y: 1)
+                            .offset(x: isSelf ? -8 : 8, y: -10)
+                        }
                     }
-                }
-                if isLastInRun {
-                    captionRow
+                    .frame(maxWidth: maxBubbleWidth, alignment: isSelf ? .trailing : .leading)
+                if !isSelf {
+                    Spacer(minLength: 40)
                 }
             }
-            .frame(maxWidth: maxBubbleWidth, alignment: isSelf ? .trailing : .leading)
-
-            if !isSelf {
-                Spacer(minLength: 40)
+            if isLastInRun {
+                captionRow
+                    .padding(.leading, contentIndent)
             }
         }
         .frame(maxWidth: .infinity, alignment: isSelf ? .trailing : .leading)
