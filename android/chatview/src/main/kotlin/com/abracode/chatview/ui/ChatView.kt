@@ -1,11 +1,11 @@
 package com.abracode.chatview.ui
 
-// A6 Compose transcript view - the public entry point. Owns the ChatStore lifecycle, derives the per-item layout
+// A6/A7 Compose chat view - the public entry point. Owns the ChatStore lifecycle, derives the per-item layout
 // (run grouping + day separators + row contexts), renders the keyed LazyColumn (paging sentinel, load-earlier
 // header, item rows, typing / awaiting indicators, bottom sentinel), and runs the direct-signal scroll-pin
 // sampler (plan divergence D5): a bottom-sentinel + drag-interaction detector decides pinning, pinned follow
 // chases new content non-animated, prepends hold position, a generation bump resets, near-top requests paging,
-// and a jump-to-latest pill + reply-jump highlight round it out. No composer - that is A7.
+// and a jump-to-latest pill + reply-jump highlight round it out. The composer (A7) sits below, unless readOnly.
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -13,6 +13,7 @@ import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -50,16 +51,20 @@ import androidx.compose.ui.unit.dp
 import com.abracode.chatview.ChatConfiguration
 import com.abracode.chatview.ChatContentSource
 import com.abracode.chatview.ChatHostEventSink
+import com.abracode.chatview.ChatItem
 import com.abracode.chatview.ChatLogger
 import com.abracode.chatview.ChatStore
 import com.abracode.chatview.ChatTranscriptLayout
 import com.abracode.chatview.ConsoleChatLogger
 import kotlinx.coroutines.launch
 
+// The reply-excerpt ellipsis (U+2026), kept as a code point so the source stays ASCII (matches ChatView.swift).
+private val ELLIPSIS = String(Character.toChars(0x2026))
+
 /**
- * The Chat component's read-only transcript view. Constructs and owns a ChatStore for the given configuration,
- * renders its transcript, and follows / pins the scroll like a messaging app. The composer (input, send, attach)
- * is a separate later stage - this view is transcript-only (readOnly is already transcript-only).
+ * The Chat component's view. Constructs and owns a ChatStore for the given configuration, renders its transcript,
+ * follows / pins the scroll like a messaging app, and (unless readOnly) hosts the composer below - input, attach,
+ * and a Send button that swaps to Stop while a turn is in flight, with reply / edit banners driven by the row menu.
  */
 @Composable
 fun ChatView(
@@ -101,6 +106,11 @@ fun ChatView(
     var userScrollActive by remember { mutableStateOf(false) }
     var highlightedItemID by remember { mutableStateOf<String?>(null) }
     var awaitingLong by remember { mutableStateOf(false) }
+    // Composer reply / edit state (view-local, dual alignment). Reply / edit put a banner above the composer; the row
+    // context menu sets them, the composer's cancel / submit clear them. Mirrors ChatView.swift's replyTarget /
+    // editTargetID @State.
+    var replyTarget by remember { mutableStateOf<ReplyTarget?>(null) }
+    var editTargetID by remember { mutableStateOf<String?>(null) }
 
     // The LazyColumn item count (header + sentinels + indicators + rows). Read in composition so the effects below
     // capture a fresh value; used to target the bottom sentinel and to translate an item id into a lazy index.
@@ -224,6 +234,26 @@ fun ChatView(
         }
     }
 
+    // Composer reply / edit entry points (invoked from the row context menu). A reply quotes the message (one-line
+    // excerpt, capped); an edit prefills the draft with the message text. Each clears the other, mirroring
+    // ChatView.swift beginReply / beginEdit.
+    fun replyExcerpt(text: String): String {
+        val oneLine = text.replace("\n", " ").trim()
+        return if (oneLine.length > 120) oneLine.take(120) + ELLIPSIS else oneLine
+    }
+    fun beginReply(id: String) {
+        val message = (store.items.firstOrNull { it.id == id } as? ChatItem.Message)?.message ?: return
+        editTargetID = null
+        val sender = resolveName(message.senderName, message.senderID, message.role, store.participants, configuration)
+        replyTarget = ReplyTarget(id = id, excerpt = replyExcerpt(message.text), sender = sender)
+    }
+    fun beginEdit(id: String) {
+        val message = (store.items.firstOrNull { it.id == id } as? ChatItem.Message)?.message ?: return
+        replyTarget = null
+        editTargetID = id
+        store.draft = message.text
+    }
+
     // --- Layout Info derivation + row contexts. ---
 
     val itemsSnapshot = store.items.toList()
@@ -244,7 +274,8 @@ fun ChatView(
 
     // --- Render. ---
 
-    Box(modifier = modifier.fillMaxSize()) {
+    Column(modifier = modifier.fillMaxSize()) {
+      Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val maxBubbleWidth = maxOf(120.dp, (maxWidth - 24.dp) * 0.75f)
             // Remembered on the gates + width so its identity is stable across streaming flushes; an unstable actions
@@ -262,9 +293,8 @@ fun ChatView(
                     canEdit = store.canEditMessages,
                     canDelete = store.canDeleteMessages,
                     toggleReaction = { id, emoji -> store.toggleReaction(id, emoji) },
-                    // TODO(A6-followup): Reply / Edit set a composer target; the composer is A7, so these are no-ops now.
-                    reply = { },
-                    edit = { },
+                    reply = { id -> beginReply(id) },
+                    edit = { id -> beginEdit(id) },
                     delete = { id -> store.deleteMessage(id) },
                     jumpTo = { id -> jumpTo(id) },
                     cancelTransfer = { id -> store.cancelFileTransfer(id) },
@@ -319,6 +349,22 @@ fun ChatView(
                 )
             }
         }
+      }
+
+      // readOnly is the history-viewer mode: no composer (ChatView.swift:82). Otherwise the composer sits below the
+      // transcript, gating its own enablement on config / connectivity.
+      if (!configuration.readOnly) {
+          Composer(
+              store = store,
+              config = configuration,
+              replyTarget = replyTarget,
+              editTargetID = editTargetID,
+              onCancelReply = { replyTarget = null },
+              onCancelEdit = { editTargetID = null; store.draft = "" },
+              onReplySubmitted = { replyTarget = null },
+              onEditSubmitted = { editTargetID = null },
+          )
+      }
     }
 }
 

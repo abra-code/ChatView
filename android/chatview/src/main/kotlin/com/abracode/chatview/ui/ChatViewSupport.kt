@@ -192,7 +192,7 @@ private fun participantAvatar(senderID: String?, participants: List<Participant>
     return participants.firstOrNull { it.id == id }?.avatarURL
 }
 
-private fun resolveName(
+internal fun resolveName(
     senderName: String?,
     senderID: String?,
     role: ChatRole,
