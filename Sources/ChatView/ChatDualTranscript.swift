@@ -185,7 +185,7 @@ private struct DualMessageRow: View {
                     // BEFORE the maxWidth frame, so the badge pins to the bubble's real corner (not the frame edge).
                     .overlay(alignment: isSelf ? .topLeading : .topTrailing) {
                         if actions.canReact, let reactions = message.reactions, !reactions.isEmpty {
-                            ReactionChips(reactions: reactions, alignSelf: isSelf) { emoji in
+                            ReactionChips(reactions: reactions) { emoji in
                                 actions.toggleReaction(message.id, emoji)
                             }
                             .padding(2)
@@ -640,10 +640,14 @@ private struct ReplyQuote: View {
 /// A wrapping row of reaction chips under a bubble: emoji + count, `mine` tinted; tap toggles.
 private struct ReactionChips: View {
     let reactions: [Reaction]
-    let alignSelf: Bool
     let toggle: (String) -> Void
 
     var body: some View {
+        // The chips hug their content: this renders as an overlay badge on the bubble corner, and the
+        // overlay proposes the bubble's full width, so a greedy maxWidth frame here would stretch the
+        // capsule background across the whole bubble. ReactionFlow returns its content width, so the
+        // badge stays a snug pill (and still wraps to a second line if a long reaction run exceeds the
+        // bubble width). Matches the Kotlin FlowRow, which hugs its content too.
         ReactionFlow(spacing: 4) {
             ForEach(reactions, id: \.emoji) { reaction in
                 Button { toggle(reaction.emoji) } label: {
@@ -662,7 +666,6 @@ private struct ReactionChips: View {
                 .buttonStyle(.plain)
             }
         }
-        .frame(maxWidth: .infinity, alignment: alignSelf ? .trailing : .leading)
         .padding(.horizontal, 2)
     }
 }
