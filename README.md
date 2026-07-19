@@ -29,6 +29,16 @@ ChatView(configuration: ChatConfiguration(),
 
 The operational config (which transport, and its settings) is injected at runtime through your `ChatContentSource`'s config channel, never declared in static UI data: `{ "protocol": "local" }` is built in; link `ChatViewACP` / `ChatViewOpenAI` and call `ChatViewACP.register()` / `ChatViewOpenAI.register()` at launch for `"acp"` / `"openai-sse"`. A saved session restores through the same source's content channel; `readOnly` in the configuration makes a pure viewer.
 
+## Demo
+
+A standalone SwiftUI demo app is bundled as an executable target (macOS):
+
+```
+swift run ChatViewDemo
+```
+
+Three screens behind a segmented picker: People (a 1:1 `local-p2p` session), Group (the four-participant `local-p2p` scenario with member / call events), and ReadOnly (a restored group transcript, no composer). People / Group inject the transport config in code (`{ "protocol": "local-p2p", "transport": { "scenario": ... } }`), so nothing is declared in static UI data. It is the Apple twin of the Kotlin `android/demo` module.
+
 ## ActionUI
 
 ActionUI consumers get this component through the ActionUIChat add-on, whose `Chat` element wraps this view for JSON documents, maps element properties to `ChatConfiguration`, and routes host events to ActionUI action IDs.

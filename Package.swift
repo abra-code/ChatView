@@ -24,6 +24,9 @@ let package = Package(
         .library(name: "ChatView", targets: ["ChatView"]),
         .library(name: "ChatViewACP", targets: ["ChatViewACP"]),
         .library(name: "ChatViewOpenAI", targets: ["ChatViewOpenAI"]),
+        // A standalone SwiftUI demo app (macOS): `swift run ChatViewDemo`. Wires ChatView directly
+        // across People / Group / ReadOnly screens - the Apple twin of the Kotlin android/demo module.
+        .executable(name: "ChatViewDemo", targets: ["ChatViewDemo"]),
     ],
     dependencies: [
         // Sibling standalone components (github.com/abra-code), consumed as versioned releases.
@@ -47,6 +50,14 @@ let package = Package(
         // The OpenAI SSE transport: streams /v1/chat/completions (llama-server, mlx_lm.server,
         // any OpenAI-compatible endpoint). Cross-platform (URLSession). Registers `openai-sse`.
         .target(name: "ChatViewOpenAI", dependencies: ["ChatView"], path: "Sources/OpenAI"),
+        // The standalone demo app (macOS). Bundles transcript-v2-group.json (copied from Fixtures)
+        // as the ReadOnly screen's restored transcript.
+        .executableTarget(
+            name: "ChatViewDemo",
+            dependencies: ["ChatView"],
+            path: "Examples/ChatViewDemo",
+            resources: [.process("transcript-v2-group.json")]
+        ),
         .testTarget(name: "ChatViewTests", dependencies: ["ChatView"], path: "Tests/ChatViewTests"),
         .testTarget(name: "ChatViewACPTests", dependencies: ["ChatViewACP", "ChatView"], path: "Tests/ACPTests"),
         .testTarget(name: "ChatViewOpenAITests", dependencies: ["ChatViewOpenAI", "ChatView"], path: "Tests/OpenAITests"),
