@@ -21,6 +21,38 @@ enum ChatScrollPinDecision: Equatable {
     case chase    // content grew / the view resized under a pinned viewport: scroll to the new bottom
 }
 
+/// Defers a pinned-viewport chase to a later main-runloop turn, coalescing a burst of scroll /
+/// layout samples into a single scroll. The deferral is load-bearing, not cosmetic: the geometry
+/// callback that decides `.chase` fires inside AppKit's layout pass (SwiftUI dispatches pending
+/// scroll actions during `NSHostingView.layout`), and a synchronous `scrollTo` there marks layout
+/// dirty mid-pass. While a freshly grown transcript is still settling (lazy rows materializing,
+/// text wrapping), that repeats within ONE display cycle until AppKit's layout-loop guard throws
+/// from `-[NSWindow _postWindowNeedsUpdateConstraints]` and `-[NSApplication _crashOnException:]`
+/// kills the app (the "typed a message, app died" crash). One runloop hop runs every chase outside
+/// the display cycle, so a settle that takes N rounds becomes N cheap turns instead of N forced
+/// re-layouts inside one cycle.
+///
+/// A reference type held in `@State` for the same reason as ChatScrollPinTracker below: scheduling
+/// from a per-frame geometry sample must not invalidate the view.
+@MainActor
+final class ChatScrollChaser {
+    private var scheduled = false
+
+    /// Runs `chase` on a later main-runloop turn; calls made while one is pending coalesce into it
+    /// (the pending action runs once). The action must re-check its own preconditions when it runs -
+    /// the pin may have been released by a sample processed in between.
+    func schedule(_ chase: @escaping @MainActor () -> Void) {
+        guard !scheduled else { return }
+        scheduled = true
+        Task { @MainActor in
+            // Cleared BEFORE running so a geometry change caused by this chase's own scroll can
+            // schedule the next round (each round on its own turn - never within one cycle).
+            self.scheduled = false
+            chase()
+        }
+    }
+}
+
 /// A reference type so ChatView can hold it in `@State` and update its running sample on every scroll
 /// event WITHOUT invalidating the view each frame - only an actual pin flip (kept in ChatView's own
 /// `@State isPinnedToBottom`) redraws. Confined to the main actor; never shared, so it needs no

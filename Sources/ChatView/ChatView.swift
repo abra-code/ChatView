@@ -33,6 +33,11 @@ public struct ChatView: View {
     // Turns each scroll / layout sample into a pin action (see ChatScrollPin.swift). A reference type in
     // @State so updating its running sample every frame does NOT redraw the view - only a pin flip does.
     @State private var pinTracker = ChatScrollPinTracker()
+    // Defers + coalesces the geometry-driven chase: a .chase is decided inside the layout pass, where
+    // a synchronous scrollTo can loop the display cycle into AppKit's layout-loop kill. Same
+    // reference-in-@State trick as pinTracker (scheduling must not invalidate the view). See
+    // ChatScrollChaser in ChatScrollPin.swift for the full crash mechanics.
+    @State private var chaser = ChatScrollChaser()
     // The awaiting-reply spinner shows only if the first token has not arrived within this delay, so a
     // fast reply never flashes it. Driven by the body's .task(id:) tied to the awaiting condition.
     @State private var awaitingLongEnough = false
@@ -199,9 +204,9 @@ public struct ChatView: View {
                     // Otherwise follow new content ONLY while pinned; reading back must not fight streaming.
                     // The follow is NON-animated so the geometry detector never observes the mid-animation
                     // state (content grown, offset lagging) and spuriously unpins during fast streaming.
-                    // (updatePin also chases on the geometry change this triggers - a growth that arrives
-                    // without an items change, e.g. an async row remeasure, is caught there; this is the
-                    // immediate, data-driven chase.)
+                    // (updatePin also chases - deferred a runloop turn - on the geometry change this
+                    // triggers: a growth that arrives without an items change, e.g. an async row
+                    // remeasure, is caught there; this is the immediate, data-driven chase.)
                     if isPinnedToBottom {
                         scrollToBottom(proxy, animated: false)
                     }
@@ -289,6 +294,8 @@ public struct ChatView: View {
     /// resizing both push the bottom off screen but are NOT the user reading back, so they chase the
     /// new bottom rather than unpin; only a genuine user scroll-up releases the pin. `distanceFromBottom`
     /// is points of content below the fold (<= threshold means the latest entry is on screen).
+    /// Runs inside the layout pass (onScrollGeometryChange), so the chase it triggers is deferred a
+    /// runloop turn through ChatScrollChaser - never a synchronous scrollTo from here.
     private func updatePin(distanceFromBottom: CGFloat, contentHeight: CGFloat,
                            containerHeight: CGFloat, proxy: ScrollViewProxy) {
         switch pinTracker.decide(isPinned: isPinnedToBottom, distanceFromBottom: distanceFromBottom,
@@ -301,7 +308,17 @@ public struct ChatView: View {
         case .repin:
             isPinnedToBottom = true
         case .chase:
-            scrollToBottom(proxy, animated: false)
+            // Deferred one runloop turn, coalesced across the burst of samples a settling layout
+            // emits (see ChatScrollChaser). Never scroll synchronously here: this callback runs
+            // inside the layout pass, and a scrollTo that re-dirties layout mid-pass can repeat
+            // within one display cycle until AppKit's layout-loop guard kills the app.
+            chaser.schedule {
+                // Re-checked at fire time: a sample processed between schedule and fire may have
+                // released the pin (reading back must not be yanked to the bottom).
+                if isPinnedToBottom {
+                    scrollToBottom(proxy, animated: false)
+                }
+            }
         }
     }
 

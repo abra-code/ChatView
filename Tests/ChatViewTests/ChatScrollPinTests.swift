@@ -171,3 +171,47 @@ final class ChatScrollPinTests: XCTestCase {
         XCTAssertEqual(decide(t, pinned: true, distance: 0, content: 200), .keep)
     }
 }
+
+// MARK: - Chase deferral (ChatScrollChaser)
+
+// The chaser's contract, pinned down because a regression is a hard crash, not a glitch: a chase
+// scheduled from the layout pass must never run synchronously (running it inside the pass is the
+// AppKit layout-loop kill), a burst of samples must coalesce into ONE scroll, and the chaser must
+// re-arm after firing so the next settle round gets its own turn.
+@MainActor
+final class ChatScrollChaserTests: XCTestCase {
+
+    func testChaseNeverRunsSynchronously() async {
+        let chaser = ChatScrollChaser()
+        var fired = 0
+        let drained = expectation(description: "deferred chase drained")
+        chaser.schedule { fired += 1; drained.fulfill() }
+        XCTAssertEqual(fired, 0, "a scheduled chase must not run within the scheduling pass")
+        // Drain the deferred task so it does not outlive the test.
+        await fulfillment(of: [drained], timeout: 5)
+    }
+
+    func testBurstCoalescesIntoOneChase() async {
+        let chaser = ChatScrollChaser()
+        var fired = 0
+        let first = expectation(description: "deferred chase fired")
+        chaser.schedule { fired += 1; first.fulfill() }
+        // The rest of the burst (further geometry samples in the same pass) must fold into the
+        // pending one, not queue their own.
+        for _ in 0..<4 { chaser.schedule { fired += 1 } }
+        await fulfillment(of: [first], timeout: 5)
+        XCTAssertEqual(fired, 1, "a burst of schedules must net exactly one chase")
+    }
+
+    func testReArmsAfterFiring() async {
+        let chaser = ChatScrollChaser()
+        var fired = 0
+        let first = expectation(description: "first chase")
+        chaser.schedule { fired += 1; first.fulfill() }
+        await fulfillment(of: [first], timeout: 5)
+        let second = expectation(description: "second chase")
+        chaser.schedule { fired += 1; second.fulfill() }
+        await fulfillment(of: [second], timeout: 5)
+        XCTAssertEqual(fired, 2, "each settle round after a fire must get its own deferred chase")
+    }
+}
