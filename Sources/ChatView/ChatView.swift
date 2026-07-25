@@ -196,6 +196,12 @@ public struct ChatView: View {
                               containerHeight: containerHeight,
                               proxy: proxy)
                 }
+                // Whether the READER is driving the scroll view, straight from the scroll view. The pin
+                // otherwise has to infer that from offset algebra, which cannot tell a drag from the
+                // scroll view moving its own offset under a re-measuring transcript.
+                .trackScrollPhase { userDriven in
+                    pinTracker.noteScrollPhase(userDriven: userDriven)
+                }
                 .onChange(of: store.items) { old, new in
                     // A prepended history page: restore the scroll to the anchored former-top item so the
                     // view does not jump (non-animated, same layout pass). Takes precedence over the pin.
@@ -922,6 +928,33 @@ private extension View {
             onPreferenceChange(SentinelMetricsKey.self) { metrics in
                 update(metrics.distanceFromBottom, metrics.contentHeight, metrics.containerHeight)
             }
+        }
+    }
+
+    /// Reports whether the USER is currently driving the scroll view - finger or wheel on it, or the
+    /// momentum that follows. That is the one unambiguous answer to the question the pin's offset
+    /// algebra can only infer, and it is what lets a genuine scroll-up be believed on its first sample
+    /// even while a streaming transcript re-measures around it.
+    ///
+    /// `.animating` is deliberately NOT user-driven: that is the phase of the transcript's own
+    /// scroll-to-bottom, whose after-effects are exactly what the pin must not mistake for the reader.
+    /// macOS 15+ / iOS 18+ / visionOS 2+ only; the older baseline never reports, so the pin keeps its
+    /// heuristics there rather than losing the ability to unpin at all.
+    @ViewBuilder
+    func trackScrollPhase(update: @escaping (_ userDriven: Bool) -> Void) -> some View {
+        if #available(macOS 15.0, iOS 18.0, visionOS 2.0, *) {
+            onScrollPhaseChange { _, phase in
+                switch phase {
+                case .tracking, .interacting, .decelerating:
+                    update(true)
+                case .idle, .animating:
+                    update(false)
+                @unknown default:
+                    update(false)
+                }
+            }
+        } else {
+            self
         }
     }
 }

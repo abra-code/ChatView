@@ -9,6 +9,17 @@
 // Fed one sample per scroll / layout change: distanceFromBottom (points of content below the fold),
 // contentHeight, containerHeight. On macOS 15+ these come straight from onScrollGeometryChange; on the
 // older baseline from the bottom-sentinel preference. See ChatView.updatePin for the wiring.
+//
+// Two rules run the whole thing, and both exist because the offset algebra below is exact about HOW
+// MUCH the viewport moved and silent about WHO moved it:
+//
+//   1. Where the platform can answer that directly it wins - macOS 15+ reports whether the reader is
+//      driving the scroll view (noteScrollPhase), and an upward move under their finger is theirs, full
+//      stop. Everything else is inference, and inference gets the second rule.
+//   2. When unsure, do NOTHING. Never scroll the reader back on a guess. Following a stream is worth
+//      one frame of latency; fighting someone who is actively scrolling is not worth anything, and a
+//      guess enforced by scrolling also feeds its own next sample - which is how the previous version
+//      of this file latched and pulled a scrolling reader back indefinitely.
 
 import CoreGraphics
 
@@ -66,9 +77,18 @@ final class ChatScrollPinTracker {
     /// Samples remaining in the settling window (see settlingSamples). Zero means neither a
     /// re-measure nor a programmatic scroll has disturbed the viewport recently.
     private var settlingFor = 0
+    /// Samples remaining in which a viewport move may be the tail of a scroll WE issued (see
+    /// programmaticSamples). Separate from `settlingFor` because it answers a different question: not
+    /// "can this sample be trusted" but "was this the caller's own scroll landing", which must not be
+    /// counted as the reader changing their mind.
+    private var programmaticFor = 0
     /// Consecutive samples whose apparent move was upward, reset by any downward move or a return to
     /// the bottom. A user's drag sustains a run; a clamp artifact spikes once and reverses.
     private var consecutiveUpSamples = 0
+    /// Whether the scroll view says the USER is driving it right now (finger / wheel down, or the
+    /// momentum that follows). The one unambiguous answer to the question the offset algebra can only
+    /// infer; nil-equivalent (false) on the pre-macOS-15 path, where the heuristics below still apply.
+    private var userIsScrolling = false
     /// The `userScrollUp` the last `decide` computed - the value the unpin turns on. Exposed for the
     /// pin trace (ChatViewDiagnostics.pinSample) so a spurious unpin can be read off a log instead of
     /// inferred; the state machine itself stays pure.
@@ -92,7 +112,19 @@ final class ChatScrollPinTracker {
     /// user, which the offset algebra cannot tell from a drag. Four samples covered every artifact in
     /// the field trace, including the post-chase drift that a three-sample window let through, and
     /// costs a real drag at most one frame of delay.
+    ///
+    /// The window ALSO closes the moment a sample arrives with both heights steady, however many
+    /// samples are nominally left (see `decide`): every artifact it exists to reject is a side effect
+    /// of a height changing, so a steady sample proves the disturbance is over. Without that, a window
+    /// opened by the last chase of an answer stayed armed for as long as the transcript sat idle -
+    /// nothing was moving, so no sample arrived to count it down - and ambushed the reader's next
+    /// scroll minutes later.
     private static let settlingSamples = 4
+
+    /// How many samples after a scroll WE issued may still be that scroll landing. The caller scrolls
+    /// to the bottom, so the landing arrives as one big downward move onto the bottom - which is not
+    /// the reader abandoning a drag, and must not be scored as one.
+    private static let programmaticSamples = 2
 
     /// Drops the running sample so the next sample is treated as a fresh seed. Call when the transcript
     /// is replaced wholesale (a conversation loaded in place): the old sample's heights belong to the
@@ -104,7 +136,9 @@ final class ChatScrollPinTracker {
         lastDistanceFromBottom = 0
         seeded = false
         settlingFor = 0
+        programmaticFor = 0
         consecutiveUpSamples = 0
+        userIsScrolling = false   // a gesture over the previous conversation says nothing about this one
     }
 
     /// Opens the settling window because the CALLER just scrolled the viewport itself. For a few
@@ -112,9 +146,23 @@ final class ChatScrollPinTracker {
     /// the animation, re-anchoring after the content it scrolled to re-measures); those nudges reach
     /// `decide` as apparent user movement, and one of them - a 19.5pt drift right after a chase - was
     /// still releasing the pin once the shrink-only window had lapsed.
+    ///
+    /// It deliberately does NOT clear `consecutiveUpSamples`. It used to, and that made the window a
+    /// latch: the window's own answer to an unconfirmed upward move was a chase, the chase called back
+    /// in here, and the run the window was waiting for was wiped every time it started - so a reader
+    /// scrolling up was pulled back indefinitely and the pin never released. Our own scroll says
+    /// nothing about what the reader wants; it must not erase what they have already done.
     func noteProgrammaticScroll() {
         settlingFor = Self.settlingSamples
-        consecutiveUpSamples = 0
+        programmaticFor = Self.programmaticSamples
+    }
+
+    /// Reports whether the scroll view itself says the user is driving it (macOS 15+ / iOS 18+ scroll
+    /// phases; see ChatView.trackScrollPhase). When it does, the guessing below is bypassed entirely:
+    /// an upward move while the reader's finger or wheel is on the view IS the reader, whatever the
+    /// content heights are doing. The older baseline never calls this and keeps the heuristics.
+    func noteScrollPhase(userDriven: Bool) {
+        userIsScrolling = userDriven
     }
 
     /// Maps one scroll / layout sample to a pin action. `threshold` is the at-bottom tolerance (points
@@ -138,26 +186,45 @@ final class ChatScrollPinTracker {
         let userScrollUp = gapDelta - contentDelta + containerDelta
         lastUserScrollUp = userScrollUp
 
-        // Running state the unpin rule consults. Updated on EVERY actionable sample, including the
-        // at-bottom ones below, so a run of upward samples is counted across the whole gesture.
+        // Running state the unpin rule consults. Updated on every actionable sample except the ones
+        // that are demonstrably the caller's own scroll landing (below), so a run of upward samples is
+        // counted across a whole gesture even while the transcript keeps following a stream.
         let shrank = contentDelta < -Self.shrinkEpsilon
+        // Did either measured height move at all this sample? Only a height change can move the offset
+        // without the user (the scroll view clamps to a shrunken maximum, or re-anchors as lazy rows
+        // materialize), so a sample with both heights steady is trustworthy on its face - AND it proves
+        // that any re-measure which opened the settling window has finished.
+        let heightsMoved = abs(contentDelta) > Self.shrinkEpsilon || abs(containerDelta) > Self.shrinkEpsilon
+        if programmaticFor > 0 {
+            programmaticFor -= 1
+        }
         if shrank {
             settlingFor = Self.settlingSamples
+        } else if !heightsMoved {
+            settlingFor = 0
         } else if settlingFor > 0 {
             settlingFor -= 1
         }
-        if shrank {
-            // A shrink reads as a large upward move by construction (the offset is clamped with the
-            // content), so it must not count as the first half of a confirmed drag - it would confirm
-            // the very artifact this is here to reject. Start the run over instead.
-            consecutiveUpSamples = 0
-        } else if userScrollUp > Self.scrollEpsilon {
-            consecutiveUpSamples += 1
-        } else if userScrollUp < -Self.scrollEpsilon {
-            consecutiveUpSamples = 0
-        }
-        if distanceFromBottom <= threshold {
-            consecutiveUpSamples = 0   // back at the bottom: whatever run was building is over
+
+        let atBottom = distanceFromBottom <= threshold
+        // A sample that lands at the bottom right after we scrolled there is our own scroll arriving,
+        // not the reader giving up on a drag. Score nothing from it - neither the big downward move nor
+        // the arrival at the bottom - or the caller's follow-the-stream scroll silently cancels the
+        // reader's evidence on every delta and the confirmation below can never be reached.
+        if !(programmaticFor > 0 && atBottom) {
+            if shrank {
+                // A shrink reads as a large upward move by construction (the offset is clamped with the
+                // content), so it must not count as the first half of a confirmed drag - it would
+                // confirm the very artifact this is here to reject. Start the run over instead.
+                consecutiveUpSamples = 0
+            } else if userScrollUp > Self.scrollEpsilon {
+                consecutiveUpSamples += 1
+            } else if userScrollUp < -Self.scrollEpsilon {
+                consecutiveUpSamples = 0
+            }
+            if atBottom {
+                consecutiveUpSamples = 0   // back at the bottom: whatever run was building is over
+            }
         }
 
         let wasSeeded = seeded
@@ -166,7 +233,6 @@ final class ChatScrollPinTracker {
         lastDistanceFromBottom = distanceFromBottom
         seeded = true
 
-        let atBottom = distanceFromBottom <= threshold
         guard isPinned else {
             return atBottom ? .repin : .keep
         }
@@ -193,24 +259,35 @@ final class ChatScrollPinTracker {
         // A genuine user scroll-up never shrinks the content, so nothing real is lost: growth still
         // unpins normally (the growth is netted out and cannot mask a scroll), and a shrink that
         // coincides with a real drag simply defers the unpin to the next sample.
-        if contentDelta < -Self.shrinkEpsilon {
+        if shrank {
             return .chase
         }
-        // The rebound half of the same artifact: after a shrink clamped the offset, the offset does not
-        // come back when the height does, and that missing return reads as an upward move on a sample
-        // whose content GREW - so the shrink guard alone does not cover it. While the height is still
-        // re-measuring, require a second consecutive upward sample before believing it. A drag sustains
-        // (the scroll view emits a stream of same-direction samples); the artifact spikes once and
-        // reverses on the next sample, which resets the run. Outside the window a single sample still
-        // unpins immediately, so a decisive fling mid-stream keeps its current behavior.
+        // The bottom is off screen without the viewport having moved up: the bottom drifted off under a
+        // pinned viewport purely from growth / a resize / a downward scroll still landing. Follow it.
+        // A streaming flush that grew the content in the SAME sample as a real scroll-up does not land
+        // here - the growth is netted out exactly, so it can never mask the scroll and yank the reader.
+        guard userScrollUp > Self.scrollEpsilon else {
+            return .chase
+        }
+        // The viewport moved up. If the scroll view says the reader is driving it, that settles it.
+        if userIsScrolling {
+            return .unpin
+        }
+        // Otherwise this may be the rebound half of the re-measure artifact: after a shrink clamped the
+        // offset, the offset does not come back when the height does, and that missing return reads as
+        // an upward move on a sample whose content GREW - past the shrink guard above. While the height
+        // is still re-measuring, require a second consecutive upward sample before believing it. A drag
+        // sustains (the scroll view emits a stream of same-direction samples); the artifact spikes once
+        // and reverses on the next sample, which resets the run. Once the heights are steady the window
+        // is already closed above, so a single decisive sample unpins as it always did.
+        //
+        // The answer while unsure is to do NOTHING, not to chase. Chasing was a guess that the reader
+        // had not moved, imposed by scrolling them back - the wrong way round, since the cost of
+        // guessing wrong is fighting someone who is actively scrolling, and the cost of waiting is one
+        // frame of not following a stream that the items-follow chases anyway.
         if settlingFor > 0 && consecutiveUpSamples < 2 {
-            return .chase
+            return .keep
         }
-        // The bottom is off screen. Release the pin only if the user themselves moved the viewport up
-        // this sample - even when a streaming flush grew the content in the SAME sample (the growth is
-        // already netted out, so it cannot mask the scroll and yank the reader back). Otherwise the
-        // bottom drifted off under a pinned viewport purely from growth / a resize / a downward chase
-        // animation (userScrollUp <= 0): follow it.
-        return userScrollUp > Self.scrollEpsilon ? .unpin : .chase
+        return .unpin
     }
 }

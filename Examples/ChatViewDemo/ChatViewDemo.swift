@@ -54,6 +54,9 @@ final class DemoAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        // Synthetic reader scrolling, if asked for (see ScrollProbe.swift). Started here rather than
+        // from a screen so it is independent of which transport is running.
+        ScrollProbe.startIfRequested()
         // The layout repro needs a HOST-SIZED window: the guard trips on how much re-layout one
         // display cycle has to absorb, and a 420x520 window materializes a handful of transcript rows
         // where a real chat window materializes dozens. Only the stress run resizes, so the ordinary

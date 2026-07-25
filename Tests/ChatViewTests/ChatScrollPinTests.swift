@@ -159,22 +159,41 @@ final class ChatScrollPinTests: XCTestCase {
         let t = seededTracker(content: 660)
         // Shrink 660 -> 575, still above the fold (negative distance = at bottom).
         XCTAssertEqual(decide(t, pinned: true, distance: -28, content: 575), .keep, "the shrink itself")
-        // Rebound 575 -> 608: gapDelta 61 - contentDelta 33 = +28 apparent upward move.
-        XCTAssertEqual(decide(t, pinned: true, distance: 33, content: 608), .chase,
+        // Rebound 575 -> 608: gapDelta 61 - contentDelta 33 = +28 apparent upward move. Unconfirmed
+        // while the height is still moving - and the answer to "unsure" is to do nothing. It is NOT to
+        // chase: that is a guess that the reader did not move, imposed by scrolling them back, and when
+        // the guess is wrong the transcript is fighting someone who is actively scrolling.
+        XCTAssertEqual(decide(t, pinned: true, distance: 33, content: 608), .keep,
                        "the rebound's apparent scroll-up is unconfirmed while the height re-measures")
-        // And the reversal that always follows: gapDelta 30 - contentDelta 58 = -28.
+        // And the reversal that always follows: gapDelta 30 - contentDelta 58 = -28. Not an upward move
+        // at all, so the transcript resumes following, and the run resets so no second sample confirms.
         XCTAssertEqual(decide(t, pinned: true, distance: 63, content: 666), .chase,
                        "the reversal resets the run, so no second sample ever confirms")
     }
 
-    /// The window must not swallow a REAL drag: a user scrolling back through a re-measuring transcript
-    /// unpins on the second consecutive upward sample (one frame later than on a settled height).
+    /// The window must not swallow a REAL drag: a user scrolling back through a transcript whose height
+    /// is still moving unpins on the second consecutive upward sample - and is never scrolled back to
+    /// the bottom in between.
     func testSustainedDragDuringReMeasureStillUnpins() {
         let t = seededTracker(content: 660)
         XCTAssertEqual(decide(t, pinned: true, distance: -28, content: 575), .keep, "a shrink opens the window")
-        // Two consecutive upward samples with the content steady: the user is dragging back.
-        XCTAssertEqual(decide(t, pinned: true, distance: 30, content: 575), .chase, "first sample: unconfirmed")
-        XCTAssertEqual(decide(t, pinned: true, distance: 60, content: 575), .unpin, "second sample confirms it")
+        // The height is still moving, so the window is still open: -28 -> 30 with content 575 -> 585 is
+        // gapDelta 58 - contentDelta 10 = +48 up, unconfirmed.
+        XCTAssertEqual(decide(t, pinned: true, distance: 30, content: 585), .keep, "first sample: unconfirmed")
+        // 30 -> 78 with content 585 -> 595: gapDelta 48 - contentDelta 10 = +38 up, same direction.
+        XCTAssertEqual(decide(t, pinned: true, distance: 78, content: 595), .unpin, "second sample confirms it")
+    }
+
+    /// The window closes the moment a sample arrives with the heights steady, however many samples it
+    /// nominally had left. Every artifact it exists to reject is a side effect of a height changing, so
+    /// a steady sample proves the disturbance is over - and a window that only counted samples down
+    /// stayed armed for as long as the transcript sat idle (nothing moving, so no samples), which is
+    /// what ambushed a reader's first scroll minutes after an answer finished.
+    func testWindowClosesAsSoonAsTheHeightsAreSteady() {
+        let t = seededTracker(content: 660)
+        XCTAssertEqual(decide(t, pinned: true, distance: -28, content: 575), .keep, "a shrink opens the window")
+        XCTAssertEqual(decide(t, pinned: true, distance: 30, content: 575), .unpin,
+                       "the height is steady again, so one decisive sample is believed immediately")
     }
 
     /// Outside the re-measure window nothing changes: one decisive sample still unpins immediately.
@@ -186,6 +205,110 @@ final class ChatScrollPinTests: XCTestCase {
             XCTAssertEqual(decide(t, pinned: true, distance: 0, content: 575), .keep)
         }
         XCTAssertEqual(decide(t, pinned: true, distance: 40, content: 575), .unpin)
+    }
+
+    // MARK: - The scroll view's own phase (macOS 15+)
+
+    /// Where the platform can tell us the reader is driving the scroll view, none of the guessing above
+    /// applies: an upward move with their finger or wheel on the view is the reader, whatever the
+    /// heights are doing and whatever window is open.
+    func testUserDrivenScrollPhaseUnpinsOnTheFirstSample() {
+        let t = seededTracker(content: 660)
+        t.noteProgrammaticScroll()            // a settling window is open...
+        t.noteScrollPhase(userDriven: true)
+        // ...and the height is still moving: gapDelta 58 - contentDelta 10 = +48 up.
+        XCTAssertEqual(decide(t, pinned: true, distance: 58, content: 670), .unpin)
+    }
+
+    /// The identical sample without that signal (the pre-macOS-15 path) still waits for confirmation -
+    /// the phase is a positive override, never a requirement, so a platform that never reports one
+    /// keeps the heuristics rather than losing the ability to unpin.
+    func testSameSampleWithoutThePhaseSignalWaitsForConfirmation() {
+        let t = seededTracker(content: 660)
+        t.noteProgrammaticScroll()
+        XCTAssertEqual(decide(t, pinned: true, distance: 58, content: 670), .keep)
+    }
+
+    // MARK: - Never fight the user
+    //
+    // ChatView closes a loop the tracker cannot see on its own: a `.chase` becomes a scrollToBottom,
+    // which calls noteProgrammaticScroll() and lands an at-bottom sample back in `decide` a moment
+    // later. `drive` below plays that loop out, which is the only way these tests can catch the class
+    // of bug that matters most here - a rule whose own output destroys the evidence it is waiting for,
+    // so the transcript pulls a scrolling reader back indefinitely.
+
+    /// Feeds one sample the way ChatView does, including that feedback: on `.chase` the transcript
+    /// scrolls to the bottom (distance 0), tells the tracker the move was ours, and the sample that
+    /// scroll produces goes back in. Mutates `pinned` / `distance` like the view's `@State`.
+    private func drive(_ t: ChatScrollPinTracker, pinned: inout Bool, distance: inout CGFloat,
+                       content: CGFloat, scrolls: inout Int) {
+        switch decide(t, pinned: pinned, distance: distance, content: content) {
+        case .unpin:
+            pinned = false
+        case .repin:
+            pinned = true
+        case .chase:
+            guard pinned else { break }
+            scrolls += 1
+            distance = 0
+            t.noteProgrammaticScroll()
+            _ = decide(t, pinned: pinned, distance: 0, content: content)
+        case .keep, .ignore:
+            break
+        }
+    }
+
+    /// The reported regression: on a transcript that is not changing at all, small wheel notches were
+    /// answered by scrolling back to the bottom, over and over. The confirmation window had been left
+    /// armed by the last chase of the previous answer and never lapsed (nothing was moving, so no
+    /// sample arrived to count it down), and every chase it produced re-armed it and erased the run it
+    /// was waiting for.
+    func testSmallScrollUpOnASettledTranscriptUnpinsAndNeverScrollsBack() {
+        let t = seededTracker(content: 2000)
+        t.noteProgrammaticScroll()   // the previous answer's last chase; then the reader just reads
+        var pinned = true
+        var distance: CGFloat = 0
+        var scrolls = 0
+        for _ in 0..<8 where pinned {
+            distance += 12           // one wheel notch, content and container dead steady
+            drive(t, pinned: &pinned, distance: &distance, content: 2000, scrolls: &scrolls)
+        }
+        XCTAssertFalse(pinned, "a scroll-up on a transcript that is not moving must release the pin")
+        XCTAssertEqual(scrolls, 0, "and the transcript must never scroll itself back under the reader")
+    }
+
+    /// Tapping a reply quote scrolls UP to the quoted message - a programmatic move, so the window was
+    /// armed, and the window's answer to an unconfirmed upward move was to chase: the jump was undone
+    /// and the reader landed back at the bottom.
+    func testJumpToAnOlderMessageIsNotChasedBackToTheBottom() {
+        let t = seededTracker(content: 2000)
+        t.noteProgrammaticScroll()
+        var pinned = true
+        var distance: CGFloat = 900
+        var scrolls = 0
+        drive(t, pinned: &pinned, distance: &distance, content: 2000, scrolls: &scrolls)
+        XCTAssertEqual(scrolls, 0, "the jump must not be chased back to the bottom")
+        XCTAssertFalse(pinned, "and reading an older message releases the pin")
+    }
+
+    /// Mid-stream the reader drags back while the items-follow keeps scrolling to the bottom. The
+    /// follow's own landing must not count against the drag, or the reader can never accumulate the
+    /// confirmation the re-measure window asks for and the transcript wins forever.
+    func testDragDuringStreamingUnpinsDespiteTheFollowScrollingBack() {
+        let t = seededTracker(content: 1000)
+        var content: CGFloat = 1000
+        var pinned = true
+        for round in 1...4 where pinned {
+            // The stream grows the content and the items-follow scrolls to the bottom.
+            content += 40
+            t.noteProgrammaticScroll()
+            XCTAssertEqual(decide(t, pinned: pinned, distance: 0, content: content), .keep,
+                           "round \(round): the follow's landing is at the bottom")
+            // Then the reader drags up 30pt while another 40pt of content arrives.
+            content += 40
+            if decide(t, pinned: pinned, distance: 70, content: content) == .unpin { pinned = false }
+        }
+        XCTAssertFalse(pinned, "a sustained drag must release the pin even while the follow fights it")
     }
 
     // MARK: - Re-pin
