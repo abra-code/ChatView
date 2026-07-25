@@ -208,11 +208,26 @@ public struct ChatView: View {
                     // Otherwise follow new content ONLY while pinned; reading back must not fight streaming.
                     // The follow is NON-animated so the geometry detector never observes the mid-animation
                     // state (content grown, offset lagging) and spuriously unpins during fast streaming.
-                    // (updatePin also chases - deferred a runloop turn - on the geometry change this
-                    // triggers: a growth that arrives without an items change, e.g. an async row
-                    // remeasure, is caught there; this is the immediate, data-driven chase.)
+                    // (updatePin also chases on the geometry change this triggers: a growth that arrives
+                    // without an items change, e.g. an async row remeasure, is caught there.)
+                    //
+                    // Deferred one runloop turn through the SAME chaser as the geometry-driven chase, and
+                    // for the same reason: a streaming turn mutates items once per delta, so a synchronous
+                    // scrollTo here queues a scroll action on nearly every update, and SwiftUI applies
+                    // those inside NSHostingView.layout - enough of them can land in one display cycle to
+                    // exhaust the window's layout budget, which throws from
+                    // -[NSWindow _postWindowNeedsUpdateConstraints] and kills the app. The 0.2.1 fix
+                    // exempted this edge as "one-shot, cannot self-feed": true of the paging restore,
+                    // onAppear and the pill, false of a stream. Coalescing to at most one scroll per turn
+                    // keeps the follow immediate to the eye and bounded per cycle.
                     if isPinnedToBottom {
-                        scrollToBottom(proxy, animated: false, source: "items")
+                        chaser.schedule {
+                            // Re-checked at fire time: a geometry sample processed in between may have
+                            // released the pin, and a reader must not be yanked back to the bottom.
+                            if isPinnedToBottom {
+                                scrollToBottom(proxy, animated: false, source: "items")
+                            }
+                        }
                     }
                 }
                 .onChange(of: isPinnedToBottom) { _, pinned in
