@@ -134,6 +134,60 @@ final class ChatScrollPinTests: XCTestCase {
         XCTAssertEqual(decide(t, pinned: true, distance: -40, content: 220), .keep)
     }
 
+    // MARK: - Re-measure artifacts (the "streaming stopped following" bug)
+    //
+    // Field trace (a short transcript, AppKit-backed markdown rows re-measuring as text streams in):
+    // the reported contentHeight oscillates by ~100pt, and with the content near the container height
+    // the scroll view clamps its own contentOffset. The clamp and its rebound are indistinguishable
+    // from a user drag in the offset algebra, so the pin flapped unpin -> repin -> unpin mid-answer and
+    // the transcript stopped following. Both halves are pinned down here.
+
+    /// The clamp half, from the trace: content 1030 -> 926 while the offset falls 52 -> 0, so the
+    /// algebra reports a +52 upward move on a sample where the user did nothing.
+    func testContentShrinkThatMovesTheOffsetDoesNotUnpin() {
+        let t = seededTracker(content: 1030)
+        // Seed sample sits at the bottom; then the shrink: gap 0 -> 64 with content 1030 -> 926 gives
+        // userScrollUp = gapDelta(64) - contentDelta(-104) = +168, well past the epsilon.
+        XCTAssertEqual(decide(t, pinned: true, distance: 64, content: 926), .chase,
+                       "an offset move caused by the content shrinking under it is not a user scroll")
+    }
+
+    /// The rebound half, from the same trace (samples 69-71): the height comes back but the clamped
+    /// offset does not, so the apparent upward move lands on a sample whose content GREW - past the
+    /// shrink guard. The re-measure window is what rejects it.
+    func testShrinkReboundDoesNotUnpin() {
+        let t = seededTracker(content: 660)
+        // Shrink 660 -> 575, still above the fold (negative distance = at bottom).
+        XCTAssertEqual(decide(t, pinned: true, distance: -28, content: 575), .keep, "the shrink itself")
+        // Rebound 575 -> 608: gapDelta 61 - contentDelta 33 = +28 apparent upward move.
+        XCTAssertEqual(decide(t, pinned: true, distance: 33, content: 608), .chase,
+                       "the rebound's apparent scroll-up is unconfirmed while the height re-measures")
+        // And the reversal that always follows: gapDelta 30 - contentDelta 58 = -28.
+        XCTAssertEqual(decide(t, pinned: true, distance: 63, content: 666), .chase,
+                       "the reversal resets the run, so no second sample ever confirms")
+    }
+
+    /// The window must not swallow a REAL drag: a user scrolling back through a re-measuring transcript
+    /// unpins on the second consecutive upward sample (one frame later than on a settled height).
+    func testSustainedDragDuringReMeasureStillUnpins() {
+        let t = seededTracker(content: 660)
+        XCTAssertEqual(decide(t, pinned: true, distance: -28, content: 575), .keep, "a shrink opens the window")
+        // Two consecutive upward samples with the content steady: the user is dragging back.
+        XCTAssertEqual(decide(t, pinned: true, distance: 30, content: 575), .chase, "first sample: unconfirmed")
+        XCTAssertEqual(decide(t, pinned: true, distance: 60, content: 575), .unpin, "second sample confirms it")
+    }
+
+    /// Outside the re-measure window nothing changes: one decisive sample still unpins immediately.
+    func testSingleSampleUnpinSurvivesOnceTheHeightHasSettled() {
+        let t = seededTracker(content: 660)
+        XCTAssertEqual(decide(t, pinned: true, distance: 30, content: 575), .chase, "shrink opens the window")
+        // Let the window lapse with settled samples at the bottom, then fling up once.
+        for _ in 0..<3 {
+            XCTAssertEqual(decide(t, pinned: true, distance: 0, content: 575), .keep)
+        }
+        XCTAssertEqual(decide(t, pinned: true, distance: 40, content: 575), .unpin)
+    }
+
     // MARK: - Re-pin
 
     func testReturnToBottomRepins() {

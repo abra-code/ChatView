@@ -32,6 +32,15 @@ struct ChatViewDemo: App {
     @NSApplicationDelegateAdaptor(DemoAppDelegate.self) private var delegate
     #endif
 
+    init() {
+        // Register the Stress screen's transport HERE, not in applicationDidFinishLaunching: SwiftUI
+        // builds and first-renders the scene during launch, so the screen's onAppear - and with it the
+        // store's config subscription - can run before the delegate callback. A protocol that is not
+        // registered when its config arrives falls back to the built-in `local` transport, which waits
+        // for a prompt: the symptom is a Stress screen that just sits there empty.
+        registerStressTransport()
+    }
+
     var body: some Scene {
         WindowGroup("ChatView Demo") {
             DemoRoot()
@@ -45,19 +54,51 @@ final class DemoAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        // The layout repro needs a HOST-SIZED window: the guard trips on how much re-layout one
+        // display cycle has to absorb, and a 420x520 window materializes a handful of transcript rows
+        // where a real chat window materializes dozens. Only the stress run resizes, so the ordinary
+        // demo screens keep their compact default.
+        guard DemoScreen.initial == .stress, let window = NSApp.windows.first else { return }
+        let width = Double(ProcessInfo.processInfo.environment["CHATVIEW_STRESS_WIDTH"] ?? "") ?? 1400
+        let height = Double(ProcessInfo.processInfo.environment["CHATVIEW_STRESS_HEIGHT"] ?? "") ?? 1000
+        if let screen = window.screen ?? NSScreen.main {
+            let frame = screen.visibleFrame
+            let size = NSSize(width: min(width, frame.width), height: min(height, frame.height))
+            window.setFrame(NSRect(x: frame.midX - size.width / 2, y: frame.midY - size.height / 2,
+                                   width: size.width, height: size.height), display: true)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 #endif
 
+/// Registers the `stress` protocol (see StressTransport.swift). Idempotent - the registry keeps the
+/// latest registration - so the Stress screen re-registers defensively on construction too, in case a
+/// future entry point builds the screen without going through the App initializer.
+@MainActor
+func registerStressTransport() {
+    ChatTransportRegistry.shared.register("stress") { config, _ in StressTransport(config: config) }
+    if !ChatTransportRegistry.shared.isRegistered("stress") {
+        FileHandle.standardError.write(Data("[stress] registration FAILED - the screen will fall back to `local`\n".utf8))
+    }
+}
+
 private enum DemoScreen: String, CaseIterable, Identifiable {
     case people = "People"
     case group = "Group"
     case agent = "Agent"
     case readOnly = "ReadOnly"
+    case stress = "Stress"
 
     var id: String { rawValue }
+
+    /// The screen the demo opens on. `CHATVIEW_DEMO_SCREEN=stress` starts the self-running layout
+    /// stress repro straight away, so it can be driven from a script with no clicking.
+    static var initial: DemoScreen {
+        let requested = (ProcessInfo.processInfo.environment["CHATVIEW_DEMO_SCREEN"] ?? "").lowercased()
+        return allCases.first { $0.rawValue.lowercased() == requested } ?? .people
+    }
 }
 
 /// A ChatContentSource that hands the store one fixed value on each channel it holds, delivered
@@ -83,7 +124,7 @@ private final class FixedContentSource: ChatContentSource {
 }
 
 private struct DemoRoot: View {
-    @State private var screen: DemoScreen = .people
+    @State private var screen: DemoScreen = .initial
 
     var body: some View {
         VStack(spacing: 0) {
@@ -104,6 +145,7 @@ private struct DemoRoot: View {
                 case .group:    LiveScreen(scenario: "group")
                 case .agent:    AgentScreen()
                 case .readOnly: ReadOnlyScreen()
+                case .stress:   StressScreen()
                 }
             }
             .id(screen)
@@ -155,6 +197,42 @@ private struct AgentScreen: View {
         _source = State(initialValue: FixedContentSource(config: [
             "protocol": "local",
             "transport": ["reply": "agentic"],
+        ]))
+    }
+
+    var body: some View {
+        ChatView(configuration: config, logger: logger, contentSource: source)
+    }
+}
+
+/// Stress: the self-running layout repro (see StressTransport.swift). Same agentic surfaces as the
+/// Agent screen, but the turns fire without a prompt and stream a long markdown answer as fast as the
+/// runloop drains - the "summarize this PDF" shape that trips AppKit's layout guard. The knobs are
+/// read from the environment so a run can be retuned without an edit:
+/// CHATVIEW_STRESS_ROUNDS / _CHUNK_MS / _BLOCKS.
+private struct StressScreen: View {
+    private let logger = ConsoleChatLogger()
+    private let config: ChatConfiguration
+    @State private var source: FixedContentSource
+
+    init() {
+        registerStressTransport()
+        config = ChatConfiguration(dictionary: [
+            "appearance": ["alignment": "single", "showRoleLabels": true],
+            "input": ["placeholder": "The stress turns run on their own", "submitOn": "modifier-return"],
+        ], logger: logger)
+        func env(_ name: String, _ fallback: Int) -> Int {
+            Int(ProcessInfo.processInfo.environment[name] ?? "") ?? fallback
+        }
+        _source = State(initialValue: FixedContentSource(config: [
+            "protocol": "stress",
+            "transport": [
+                "rounds": env("CHATVIEW_STRESS_ROUNDS", 6),
+                "chunkMs": env("CHATVIEW_STRESS_CHUNK_MS", 0),
+                "blocks": env("CHATVIEW_STRESS_BLOCKS", 24),
+                "turnGapMs": env("CHATVIEW_STRESS_TURN_GAP_MS", 0),
+                "toolChars": env("CHATVIEW_STRESS_TOOL_CHARS", 50_000),
+            ],
         ]))
     }
 

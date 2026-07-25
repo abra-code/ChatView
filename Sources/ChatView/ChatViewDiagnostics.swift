@@ -123,6 +123,39 @@ enum ChatViewDiagnostics {
         }
     }
 
+    // MARK: - Scroll-pin trace
+
+    /// Enable with env CHATVIEW_PIN_TRACE=1 (independent of CHATVIEW_DIAGNOSTICS - the pin trace is
+    /// noisy and answers a different question: why the transcript stopped following a stream, or how
+    /// many scrolls a display cycle absorbed before AppKit's layout guard fired).
+    static let pinTraceEnabled: Bool = {
+        guard let env = ProcessInfo.processInfo.environment["CHATVIEW_PIN_TRACE"] else {
+            return false
+        }
+        return !env.isEmpty && env != "0"
+    }()
+
+    private static let pinLog = Logger(subsystem: "com.abracode.ChatView", category: "ScrollPin")
+
+    /// One geometry sample and what the pin state machine did with it. Goes to os_log AND stderr:
+    /// stderr keeps a redirected run readable, and survives a crash without a log-stream attached.
+    static func pinSample(decision: String, pinned: Bool, distanceFromBottom: CGFloat,
+                          contentHeight: CGFloat, containerHeight: CGFloat, userScrollUp: CGFloat) {
+        guard pinTraceEnabled else { return }
+        let line = "pin \(decision) pinned=\(pinned) gap=\(fmt(distanceFromBottom)) "
+            + "content=\(fmt(contentHeight)) container=\(fmt(containerHeight)) up=\(fmt(userScrollUp))"
+        pinLog.debug("\(line, privacy: .public)")
+        FileHandle.standardError.write(Data("[pin] \(line)\n".utf8))
+    }
+
+    /// A scroll actually issued at the transcript (which edge asked for it), so the trace shows how
+    /// many scrolls one settle produced.
+    static func pinScroll(_ source: String) {
+        guard pinTraceEnabled else { return }
+        pinLog.debug("scroll \(source, privacy: .public)")
+        FileHandle.standardError.write(Data("[pin] scroll \(source)\n".utf8))
+    }
+
     private static func approxEqual(_ a: CGRect, _ b: CGRect, tolerance: CGFloat = 0.5) -> Bool {
         abs(a.origin.x - b.origin.x) <= tolerance && abs(a.origin.y - b.origin.y) <= tolerance
             && abs(a.width - b.width) <= tolerance && abs(a.height - b.height) <= tolerance

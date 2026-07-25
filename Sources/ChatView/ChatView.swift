@@ -200,6 +200,7 @@ public struct ChatView: View {
                     // A prepended history page: restore the scroll to the anchored former-top item so the
                     // view does not jump (non-animated, same layout pass). Takes precedence over the pin.
                     if let anchor = pagingAnchorID, new.count > old.count, new.first?.id != old.first?.id {
+                        pinTracker.noteProgrammaticScroll()
                         proxy.scrollTo(anchor, anchor: .top)
                         pagingAnchorID = nil
                         return
@@ -211,7 +212,7 @@ public struct ChatView: View {
                     // triggers: a growth that arrives without an items change, e.g. an async row
                     // remeasure, is caught there; this is the immediate, data-driven chase.)
                     if isPinnedToBottom {
-                        scrollToBottom(proxy, animated: false)
+                        scrollToBottom(proxy, animated: false, source: "items")
                     }
                 }
                 .onChange(of: isPinnedToBottom) { _, pinned in
@@ -219,7 +220,7 @@ public struct ChatView: View {
                 }
                 .onAppear {
                     // Loaded/restored transcripts start pinned at the latest entry.
-                    scrollToBottom(proxy, animated: false)
+                    scrollToBottom(proxy, animated: false, source: "appear")
                 }
                 .onChange(of: store.transcriptGeneration) { _, _ in
                     // A conversation was loaded in place (the transcript was replaced wholesale). The
@@ -228,11 +229,12 @@ public struct ChatView: View {
                     // the latest entry - onAppear does not refire for an in-place content swap.
                     pinTracker.reset()
                     isPinnedToBottom = true
-                    scrollToBottom(proxy, animated: false)
+                    scrollToBottom(proxy, animated: false, source: "generation")
                 }
                 .onChange(of: scrollRequest) { _, target in
                     // Jump to a tapped reply quote's original message (a brief highlight follows).
                     guard let target else { return }
+                    pinTracker.noteProgrammaticScroll()
                     withAnimation(.easeInOut(duration: 0.2)) {
                         proxy.scrollTo(target, anchor: .center)
                     }
@@ -277,7 +279,7 @@ public struct ChatView: View {
     private func jumpToLatestPill(proxy: ScrollViewProxy) -> some View {
         Button {
             isPinnedToBottom = true
-            scrollToBottom(proxy)
+            scrollToBottom(proxy, source: "pill")
         } label: {
             Label("Jump to latest", systemImage: "arrow.down")
                 .font(.callout.weight(.semibold))
@@ -301,9 +303,14 @@ public struct ChatView: View {
     /// runloop turn through ChatScrollChaser - never a synchronous scrollTo from here.
     private func updatePin(distanceFromBottom: CGFloat, contentHeight: CGFloat,
                            containerHeight: CGFloat, proxy: ScrollViewProxy) {
-        switch pinTracker.decide(isPinned: isPinnedToBottom, distanceFromBottom: distanceFromBottom,
-                                 contentHeight: contentHeight, containerHeight: containerHeight,
-                                 threshold: Self.bottomThreshold) {
+        let decision = pinTracker.decide(isPinned: isPinnedToBottom, distanceFromBottom: distanceFromBottom,
+                                         contentHeight: contentHeight, containerHeight: containerHeight,
+                                         threshold: Self.bottomThreshold)
+        ChatViewDiagnostics.pinSample(decision: "\(decision)", pinned: isPinnedToBottom,
+                                      distanceFromBottom: distanceFromBottom, contentHeight: contentHeight,
+                                      containerHeight: containerHeight,
+                                      userScrollUp: pinTracker.lastUserScrollUp)
+        switch decision {
         case .ignore, .keep:
             break
         case .unpin:
@@ -319,13 +326,17 @@ public struct ChatView: View {
                 // Re-checked at fire time: a sample processed between schedule and fire may have
                 // released the pin (reading back must not be yanked to the bottom).
                 if isPinnedToBottom {
-                    scrollToBottom(proxy, animated: false)
+                    scrollToBottom(proxy, animated: false, source: "chase")
                 }
             }
         }
     }
 
-    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true, source: String = "") {
+        ChatViewDiagnostics.pinScroll(source.isEmpty ? "bottom" : source)
+        // Tell the tracker WE moved the viewport, so the samples the scroll view emits while it settles
+        // are not mistaken for the user reading back (see ChatScrollPinTracker.noteProgrammaticScroll).
+        pinTracker.noteProgrammaticScroll()
         if animated {
             withAnimation(.easeOut(duration: 0.15)) {
                 proxy.scrollTo(bottomAnchor, anchor: .bottom)
