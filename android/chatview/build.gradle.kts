@@ -62,6 +62,18 @@ android {
     // as fast JVM unit tests; it never touches android.* APIs, so default-value stubbing stays off.
     testOptions {
         unitTests.isReturnDefaultValues = false
+        // A Gradle Managed Device so the instrumented suite runs headlessly without a hand-made
+        // AVD: `./gradlew :chatview:pixel8api34DebugAndroidTest`. aosp-atd is the slim
+        // automated-test image; Gradle downloads it on first use.
+        managedDevices {
+            localDevices {
+                create("pixel8api34") {
+                    device = "Pixel 8"
+                    apiLevel = 34
+                    systemImageSource = "aosp-atd"
+                }
+            }
+        }
     }
 }
 

@@ -25,7 +25,7 @@ let package = Package(
         .library(name: "ChatViewACP", targets: ["ChatViewACP"]),
         .library(name: "ChatViewOpenAI", targets: ["ChatViewOpenAI"]),
         // A standalone SwiftUI demo app (macOS): `swift run ChatViewDemo`. Wires ChatView directly
-        // across People / Group / ReadOnly screens - the Apple twin of the Kotlin android/demo module.
+        // across People / Group / Agent / ReadOnly screens - the Apple twin of the Kotlin android/demo module.
         .executable(name: "ChatViewDemo", targets: ["ChatViewDemo"]),
     ],
     dependencies: [

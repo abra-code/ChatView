@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -200,35 +199,40 @@ private fun InputField(
         disabledIndicatorColor = Color.Transparent,
     )
     val shape = RoundedCornerShape(20.dp)
-    // modifier-return: Ctrl+Enter (or Meta+Enter) on a hardware keyboard submits; plain Enter inserts a newline.
-    val keyModifier = if (multiline) {
-        Modifier.onPreviewKeyEvent { event ->
-            if (event.type == KeyEventType.KeyDown && event.key == Key.Enter &&
-                (event.isCtrlPressed || event.isMetaPressed)
-            ) {
-                onSubmit()
-                true
-            } else {
-                false
-            }
+    // Hardware keyboards: modifier-return submits on Ctrl+Enter (or Meta+Enter) and lets plain
+    // Enter insert a newline; the return policy submits on plain Enter (consumed, so it never
+    // inserts a newline into the grown field). The soft keyboard's Send action covers the
+    // return policy without a hardware keyboard. Known limitation: a CJK IME's
+    // composition-commit Enter on an external keyboard is also intercepted here (the draft is a
+    // plain String, so composition state is invisible at this layer).
+    val keyModifier = Modifier.onPreviewKeyEvent { event ->
+        val isEnter = event.key == Key.Enter || event.key == Key.NumPadEnter
+        val submits = if (multiline) event.isCtrlPressed || event.isMetaPressed else true
+        if (event.type == KeyEventType.KeyDown && isEnter && submits) {
+            onSubmit()
+            true
+        } else {
+            false
         }
-    } else {
-        Modifier
     }
 
     TextField(
         value = store.draft,
         onValueChange = { store.draft = it },
         modifier = modifier
-            .heightIn(max = 120.dp)
             .testTag("chat.composer.input")
             .then(keyModifier),
         enabled = enabled,
         placeholder = {
             Text(config.placeholder, maxLines = 1, overflow = TextOverflow.Ellipsis, style = LocalTextStyle.current)
         },
-        singleLine = !multiline,
-        maxLines = if (multiline) 6 else 1,
+        // Both policies wrap and grow with the draft up to an eight-line cap (matching the Apple
+        // composer), scrolling internally beyond. The agentic multiline policy opens at a
+        // three-line floor (agent prompts are usually multi-line); the chat-style return policy
+        // opens at one line. The clamps live in line counts, not a dp heightIn cap: a dp cap
+        // fights the line floor and does not scale with the user's font size.
+        minLines = if (multiline) 3 else 1,
+        maxLines = 8,
         keyboardOptions = KeyboardOptions(imeAction = if (multiline) ImeAction.Default else ImeAction.Send),
         keyboardActions = KeyboardActions(onSend = { onSubmit() }),
         colors = colors,

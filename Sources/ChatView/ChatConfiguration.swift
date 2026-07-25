@@ -30,9 +30,13 @@ public struct ChatConfiguration {
     }
 
     /// Composer submit policy - the Cmd+Return gap, solved inside the component.
-    /// `return`: single-line field, Return submits. `modifierReturn`: multiline field,
-    /// Return inserts a newline, Cmd+Return submits. `shiftReturnNewline`: treated like
-    /// `return` (Shift+Return newline is a later refinement).
+    /// `return` (chat-style): the field starts at one line and grows as a long draft wraps.
+    /// On macOS Return submits; on iOS (and visionOS) the software return key inserts a
+    /// newline and the send button submits (the platform's chat idiom - a growing field
+    /// and Return-to-send are mutually exclusive on the software keyboard). `modifierReturn` (agent-style):
+    /// multiline field with a three-line floor, Return inserts a newline, Cmd+Return
+    /// submits. `shiftReturnNewline`: treated like `return` (Shift+Return newline is a
+    /// later refinement).
     public enum SubmitPolicy: String, Sendable {
         case `return`
         case modifierReturn = "modifier-return"

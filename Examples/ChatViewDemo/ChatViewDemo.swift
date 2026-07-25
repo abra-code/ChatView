@@ -2,9 +2,11 @@
 //
 // A standalone SwiftUI demo app for the ChatView package - the Apple twin of the Kotlin
 // android/demo module. It wires the ChatView component directly (no ActionUI host) across
-// three screens behind a segmented picker: People (a 1:1 local-p2p session), Group (the
-// four-participant local-p2p scenario with member / call events), and ReadOnly (a restored
-// group transcript, history-viewer mode). People / Group inject a live transport via a
+// four screens behind a segmented picker: People (a 1:1 local-p2p session), Group (the
+// four-participant local-p2p scenario with member / call events), Agent (the scripted
+// agentic demo turn over the built-in `local` transport, with the agentic multiline
+// composer), and ReadOnly (a restored group transcript, history-viewer mode). People /
+// Group inject a live transport via a
 // content source that hands the store one operational config on subscription -
 // { "protocol": "local-p2p", "transport": { "scenario": "people" | "group" } } - and opt
 // the document into every v2 feature (reactions / editing / deletion / replies), which
@@ -52,6 +54,7 @@ final class DemoAppDelegate: NSObject, NSApplicationDelegate {
 private enum DemoScreen: String, CaseIterable, Identifiable {
     case people = "People"
     case group = "Group"
+    case agent = "Agent"
     case readOnly = "ReadOnly"
 
     var id: String { rawValue }
@@ -99,6 +102,7 @@ private struct DemoRoot: View {
                 switch screen {
                 case .people:   LiveScreen(scenario: "people")
                 case .group:    LiveScreen(scenario: "group")
+                case .agent:    AgentScreen()
                 case .readOnly: ReadOnlyScreen()
                 }
             }
@@ -126,6 +130,31 @@ private struct LiveScreen: View {
         _source = State(initialValue: FixedContentSource(config: [
             "protocol": "local-p2p",
             "transport": ["scenario": scenario],
+        ]))
+    }
+
+    var body: some View {
+        ChatView(configuration: config, logger: logger, contentSource: source)
+    }
+}
+
+/// Agent: the scripted agentic demo turn over the built-in `local` transport - thoughts, tool-call
+/// cards, a permission gate, the plan panel, and the status bar. The input uses the agentic chats'
+/// composer configuration (`submitOn: modifier-return`): a growing multiline field where Return
+/// inserts a newline and Cmd+Return submits, matching the ActionUIChat agent examples.
+private struct AgentScreen: View {
+    private let logger = ConsoleChatLogger()
+    private let config: ChatConfiguration
+    @State private var source: FixedContentSource
+
+    init() {
+        config = ChatConfiguration(dictionary: [
+            "appearance": ["alignment": "single", "showRoleLabels": true],
+            "input": ["placeholder": "Ask the agent to change something", "submitOn": "modifier-return"],
+        ], logger: logger)
+        _source = State(initialValue: FixedContentSource(config: [
+            "protocol": "local",
+            "transport": ["reply": "agentic"],
         ]))
     }
 

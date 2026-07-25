@@ -18,6 +18,9 @@ import SwiftUI
 import RichText
 import DiffView
 import AsyncImageCache
+#if canImport(AppKit)
+import AppKit
+#endif
 
 public struct ChatView: View {
 
@@ -722,7 +725,7 @@ public struct ChatView: View {
         .disabled(store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || permissionPending)
 
         // modifier-return: the multiline editor consumes plain Return (newline), so the Send button
-        // submits on Cmd+Return. return / shift-return-newline: the single-line field's onSubmit
+        // submits on Cmd+Return. return / shift-return-newline: the growing field's onSubmit
         // already handles Return, so the button takes no Return shortcut (which would double-submit).
         if config.submitOn == .modifierReturn {
             button.keyboardShortcut(.return, modifiers: .command)
@@ -737,9 +740,19 @@ public struct ChatView: View {
             multilineField
                 .disabled(permissionPending)
         } else {
-            // Single-line composer: Return submits via onSubmit.
-            TextField(config.placeholder, text: $store.draft)
+            // Return-submits composer: a vertical-axis TextField, so a long draft wraps and grows
+            // the field line-by-line (up to 8 lines, scrolling internally beyond) instead of
+            // panning a single cramped line. Return still submits via onSubmit - on macOS a
+            // vertical TextField's Return commits rather than inserting a newline, which is
+            // exactly this policy (and why the modifier-return field cannot use it). On iOS the
+            // software return key inserts a newline instead; the send button remains the submit
+            // affordance there, the platform's chat idiom.
+            TextField(config.placeholder, text: $store.draft, axis: .vertical)
                 .textFieldStyle(.plain)
+                .lineLimit(1...8)
+                // Same intrinsic-width clamp as the multiline field's mirror stack: without it a
+                // fitting-size host would widen with the draft's longest unbreakable run.
+                .frame(idealWidth: 240, maxWidth: .infinity)
                 .onSubmit { submit() }
                 .disabled(permissionPending)
         }
@@ -749,20 +762,82 @@ public struct ChatView: View {
     // macOS and iOS) and Cmd+Return (the Send button's shortcut) submits. A TextField(axis: .vertical)
     // is deliberately NOT used here: on macOS its Return commits and selects the text instead of
     // inserting a newline. TextEditor has no placeholder, so an overlaid Text stands in when empty.
+    //
+    // A TextEditor is a scroll view with no intrinsic content height, so hidden Text mirrors size
+    // the field instead: a literal three-line mirror sets the floor (agent prompts are usually
+    // multi-line, so the field invites more than one line up front; a lineLimit lower bound does
+    // not reserve space on a plain Text) and a mirror of the draft grows the field with its
+    // content, capped at eight lines so a long prompt never swallows the transcript - past the
+    // cap the editor scrolls internally, exactly as before. The clamps live in the mirrors' own
+    // text metrics, NOT in a frame(maxHeight:), which would stretch to the proposal instead of
+    // hugging the content.
     private var multilineField: some View {
         ZStack(alignment: .topLeading) {
+            Group {
+                Text(verbatim: " \n \n ")               // the three-line floor
+                Text(verbatim: draftSizingMirror)       // grows the field with the draft
+                    .lineLimit(...8)
+            }
+            .opacity(0)
+            .accessibilityHidden(true)
+            .allowsHitTesting(false)
             if store.draft.isEmpty {
                 Text(config.placeholder)
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 8)
+                    .lineLimit(3)   // a long placeholder in a narrow column must not outgrow the floor
                     .allowsHitTesting(false)
             }
+        }
+        .font(.body)
+        // idealWidth bounds the mirror's contribution to the view's intrinsic width: without it, a
+        // host that sizes to the content's fitting size (a popover, an unconstrained Auto Layout
+        // container) would widen with the draft's longest unbreakable run - a pasted paragraph
+        // could report thousands of points. Real layouts propose concrete widths and are unaffected.
+        .frame(idealWidth: 240, maxWidth: .infinity, alignment: .topLeading)
+        .padding(.horizontal, 5)
+        .padding(.trailing, Self.editorScrollerReserve)
+        .padding(.vertical, Self.editorVerticalInset)
+        .overlay(
             TextEditor(text: $store.draft)
                 .font(.body)
                 .scrollContentBackground(.hidden)
-                .frame(minHeight: 22, maxHeight: 120)
-        }
+        )
+    }
+
+    // The mirror's vertical padding must equal the editor's own internal text inset, or the
+    // difference shows up as a permanent blank row at the bottom of the field. UITextView insets
+    // its text 8pt top and bottom; macOS's NSTextView-backed TextEditor uses no vertical inset,
+    // so 8 there measured the field one line-height too tall.
+    #if os(macOS)
+    private static let editorVerticalInset: CGFloat = 0
+    #else
+    private static let editorVerticalInset: CGFloat = 8
+    #endif
+
+    // With legacy scrollers (Show scroll bars: Always, or a mouse connected) the editor's scroll
+    // view reserves the scroller width even when nothing overflows, so its text wraps that much
+    // narrower than the field. The mirror must measure at the same wrap width or a draft whose
+    // last word falls in that band wraps one line further in the editor than was measured and
+    // scrolls a line early. Overlay scrollers reserve nothing. Read per body evaluation, so a
+    // style change is picked up on the next keystroke.
+    #if os(macOS)
+    private static var editorScrollerReserve: CGFloat {
+        NSScroller.preferredScrollerStyle == .legacy
+            ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+            : 0
+    }
+    #else
+    private static let editorScrollerReserve: CGFloat = 0
+    #endif
+
+    /// The draft as the sizing mirror measures it. The editor shows the caret on a new empty line
+    /// after a trailing newline; a trailing space anchors that line in the mirror in case Text
+    /// measures the bare newline as zero-height (defensive - current macOS Text already reserves
+    /// it, so this is a no-op there, but that behavior is not contractual). Character.isNewline
+    /// (not hasSuffix("\n")) so CRLF-terminated pastes anchor too - Swift treats "\r\n" as one
+    /// grapheme, which hasSuffix("\n") misses.
+    private var draftSizingMirror: String {
+        store.draft.last?.isNewline == true ? store.draft + " " : store.draft
     }
 }
 
