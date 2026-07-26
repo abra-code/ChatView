@@ -41,6 +41,11 @@ public struct ChatView: View {
     // reference-in-@State trick as pinTracker (scheduling must not invalidate the view). See
     // ChatScrollChaser in ChatScrollPin.swift for the full crash mechanics.
     @State private var chaser = ChatScrollChaser()
+    // Scrolls the transcript to the bottom in AppKit, bypassing ScrollViewProxy - whose pending actions
+    // are applied inside NSHostingView.layout and are what throws from
+    // -[NSWindow _postWindowNeedsUpdateConstraints]. See ChatTranscriptScroller.swift for the full
+    // stack; reference-in-@State for the same non-invalidating reason as the two above.
+    @State private var scroller = ChatTranscriptScroller()
     // The awaiting-reply spinner shows only if the first token has not arrived within this delay, so a
     // fast reply never flashes it. Driven by the body's .task(id:) tied to the awaiting condition.
     @State private var awaitingLongEnough = false
@@ -189,6 +194,10 @@ public struct ChatView: View {
                     // Scroll-invariant space the row diagnostics record their frames in (a name
                     // registration only; no layout effect when diagnostics are off).
                     .coordinateSpace(name: ChatViewDiagnostics.transcriptSpace)
+                    // Hands the backing NSScrollView to the scroller (macOS only, zero-size, no layout
+                    // effect). On the vstack rather than in it, so a lazy row scrolling off screen can
+                    // never take the reference with it.
+                    .background(transcriptScrollViewFinder)
                 }
                 .trackScrolledToBottom { distanceFromBottom, contentHeight, containerHeight in
                     updatePin(distanceFromBottom: distanceFromBottom,
@@ -231,7 +240,7 @@ public struct ChatView: View {
                             // Re-checked at fire time: a geometry sample processed in between may have
                             // released the pin, and a reader must not be yanked back to the bottom.
                             if isPinnedToBottom {
-                                scrollToBottom(proxy, animated: false, source: "items")
+                                scrollToBottom(proxy, animated: false, following: true, source: "items")
                             }
                         }
                     }
@@ -270,6 +279,17 @@ public struct ChatView: View {
                 .animation(.easeInOut(duration: 0.2), value: isPinnedToBottom)
             }
         }
+    }
+
+    /// Captures the transcript's backing NSScrollView so the follow can scroll it directly; nothing at
+    /// all on platforms where ScrollViewProxy stays the only route.
+    @ViewBuilder
+    private var transcriptScrollViewFinder: some View {
+        #if os(macOS)
+        ChatScrollViewFinder(scroller: scroller)
+        #else
+        EmptyView()
+        #endif
     }
 
     /// The bottom-of-content marker: the scroll anchor plus, for the pre-macOS-15 fallback path, a
@@ -347,17 +367,35 @@ public struct ChatView: View {
                 // Re-checked at fire time: a sample processed between schedule and fire may have
                 // released the pin (reading back must not be yanked to the bottom).
                 if isPinnedToBottom {
-                    scrollToBottom(proxy, animated: false, source: "chase")
+                    scrollToBottom(proxy, animated: false, following: true, source: "chase")
                 }
             }
         }
     }
 
-    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true, source: String = "") {
-        ChatViewDiagnostics.pinScroll(source.isEmpty ? "bottom" : source)
+    /// `following` marks the streaming path - the geometry chase and the items follow, which fire many
+    /// times a second while an answer arrives. Those scroll AppKit directly rather than through
+    /// ScrollViewProxy: a proxy scroll is applied by SwiftUI from inside NSHostingView.layout, where it
+    /// asks the view graph for an immediate update and so dirties constraints during the window's
+    /// layout pass - the _postWindowNeedsUpdateConstraints crash. Deferring the call never helped,
+    /// because the deferral controls when we ask, not when SwiftUI applies. See
+    /// ChatTranscriptScroller.swift for the full stack.
+    ///
+    /// The one-shot scrolls (appear, a conversation loaded in place) stay on the proxy deliberately:
+    /// they run before the transcript has laid out, where only SwiftUI can resolve "the bottom" - the
+    /// clip view's document is still empty, so scrolling it would land at the top and need the chase to
+    /// rescue it a frame later. One pending action in an otherwise idle cycle is not what exhausts the
+    /// window's layout budget; hundreds during a stream are.
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true,
+                                following: Bool = false, source: String = "") {
         // Tell the tracker WE moved the viewport, so the samples the scroll view emits while it settles
         // are not mistaken for the user reading back (see ChatScrollPinTracker.noteProgrammaticScroll).
         pinTracker.noteProgrammaticScroll()
+        if following, !animated, scroller.scrollToBottom() {
+            ChatViewDiagnostics.pinScroll("\(source.isEmpty ? "bottom" : source)/appkit")
+            return
+        }
+        ChatViewDiagnostics.pinScroll("\(source.isEmpty ? "bottom" : source)/proxy")
         if animated {
             withAnimation(.easeOut(duration: 0.15)) {
                 proxy.scrollTo(bottomAnchor, anchor: .bottom)
