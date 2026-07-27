@@ -33,15 +33,19 @@ enum ChatScrollPinDecision: Equatable {
 }
 
 /// Defers a pinned-viewport chase to a later main-runloop turn, coalescing a burst of scroll /
-/// layout samples into a single scroll. The deferral is load-bearing, not cosmetic: the geometry
-/// callback that decides `.chase` fires inside AppKit's layout pass (SwiftUI dispatches pending
-/// scroll actions during `NSHostingView.layout`), and a synchronous `scrollTo` there marks layout
-/// dirty mid-pass. While a freshly grown transcript is still settling (lazy rows materializing,
-/// text wrapping), that repeats within ONE display cycle until AppKit's layout-loop guard throws
-/// from `-[NSWindow _postWindowNeedsUpdateConstraints]` and `-[NSApplication _crashOnException:]`
-/// kills the app (the "typed a message, app died" crash). One runloop hop runs every chase outside
-/// the display cycle, so a settle that takes N rounds becomes N cheap turns instead of N forced
-/// re-layouts inside one cycle.
+/// layout samples into a single scroll. The geometry callback that decides `.chase` fires inside
+/// AppKit's layout pass, so one runloop hop runs every chase outside the display cycle: a settle that
+/// takes N rounds becomes N cheap turns instead of N forced re-layouts inside one cycle.
+///
+/// HISTORICAL NOTE, because this comment used to assert otherwise and that assertion cost three
+/// releases. This deferral was introduced as the fix for the `-[NSWindow
+/// _postWindowNeedsUpdateConstraints]` kill, and it is NOT one. That crash is a scroller-width layout
+/// loop - see `ChatTranscriptScroller.stabilizeScrollerWidth` - which runs with no scroll of any kind
+/// in flight; a traced crash showed the transcript issuing zero scrolls and never moving its offset
+/// while the loop spun 25,360 times. Deferring, coalescing, and bypassing ScrollViewProxy were all
+/// answers to "who issues the scroll", which was the wrong question. Keep the deferral for what it
+/// actually buys - cheaper settling and no scroll from inside a layout callback - and do not add more
+/// of it in the belief that it prevents a crash.
 ///
 /// A reference type held in `@State` for the same reason as ChatScrollPinTracker below: scheduling
 /// from a per-frame geometry sample must not invalidate the view.
@@ -253,8 +257,9 @@ final class ChatScrollPinTracker {
         // (the AppKit-backed markdown rows settle a beat after their text changes), so this fired
         // repeatedly: unpin -> the reader is at the bottom -> repin -> unpin, and the transcript
         // visibly stopped following mid-answer. Every flip also writes @State, invalidating the view
-        // inside the layout pass that produced the sample - the feedback edge behind the
-        // _postWindowNeedsUpdateConstraints crash.
+        // inside the layout pass that produced the sample - worth avoiding on its own, though it is
+        // not the _postWindowNeedsUpdateConstraints crash this was once blamed for (see
+        // ChatTranscriptScroller.stabilizeScrollerWidth).
         //
         // A genuine user scroll-up never shrinks the content, so nothing real is lost: growth still
         // unpins normally (the growth is netted out and cannot mask a scroll), and a shrink that

@@ -57,6 +57,9 @@ final class DemoAppDelegate: NSObject, NSApplicationDelegate {
         // Synthetic reader scrolling, if asked for (see ScrollProbe.swift). Started here rather than
         // from a screen so it is independent of which transport is running.
         ScrollProbe.startIfRequested()
+        // Legacy (width-taking) scrollers, if asked for: the scroller-toggle layout loop cannot occur
+        // with the overlay scrollers most Macs default to (see LegacyScrollerProbe.swift).
+        LegacyScrollerProbe.startIfRequested()
         // The layout repro needs a HOST-SIZED window: the guard trips on how much re-layout one
         // display cycle has to absorb, and a 420x520 window materializes a handful of transcript rows
         // where a real chat window materializes dozens. Only the stress run resizes, so the ordinary

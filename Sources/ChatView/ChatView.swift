@@ -36,15 +36,16 @@ public struct ChatView: View {
     // Turns each scroll / layout sample into a pin action (see ChatScrollPin.swift). A reference type in
     // @State so updating its running sample every frame does NOT redraw the view - only a pin flip does.
     @State private var pinTracker = ChatScrollPinTracker()
-    // Defers + coalesces the geometry-driven chase: a .chase is decided inside the layout pass, where
-    // a synchronous scrollTo can loop the display cycle into AppKit's layout-loop kill. Same
-    // reference-in-@State trick as pinTracker (scheduling must not invalidate the view). See
-    // ChatScrollChaser in ChatScrollPin.swift for the full crash mechanics.
+    // Defers + coalesces the geometry-driven chase: a .chase is decided inside the layout pass, and
+    // scrolling from there forces re-layout mid-pass. Same reference-in-@State trick as pinTracker
+    // (scheduling must not invalidate the view). See ChatScrollChaser in ChatScrollPin.swift - its
+    // note also records that this deferral is NOT the fix for the AppKit kill, contrary to what it
+    // was introduced as.
     @State private var chaser = ChatScrollChaser()
-    // Scrolls the transcript to the bottom in AppKit, bypassing ScrollViewProxy - whose pending actions
-    // are applied inside NSHostingView.layout and are what throws from
-    // -[NSWindow _postWindowNeedsUpdateConstraints]. See ChatTranscriptScroller.swift for the full
-    // stack; reference-in-@State for the same non-invalidating reason as the two above.
+    // Owns the transcript's NSScrollView: stabilizes the vertical scroller's width (the actual fix for
+    // the -[NSWindow _postWindowNeedsUpdateConstraints] kill) and scrolls the viewport in AppKit rather
+    // than through ScrollViewProxy. See ChatTranscriptScroller.swift; reference-in-@State for the same
+    // non-invalidating reason as the two above.
     @State private var scroller = ChatTranscriptScroller()
     // The awaiting-reply spinner shows only if the first token has not arrived within this delay, so a
     // fast reply never flashes it. Driven by the body's .task(id:) tied to the awaiting condition.
@@ -227,14 +228,11 @@ public struct ChatView: View {
                     // without an items change, e.g. an async row remeasure, is caught there.)
                     //
                     // Deferred one runloop turn through the SAME chaser as the geometry-driven chase, and
-                    // for the same reason: a streaming turn mutates items once per delta, so a synchronous
-                    // scrollTo here queues a scroll action on nearly every update, and SwiftUI applies
-                    // those inside NSHostingView.layout - enough of them can land in one display cycle to
-                    // exhaust the window's layout budget, which throws from
-                    // -[NSWindow _postWindowNeedsUpdateConstraints] and kills the app. The 0.2.1 fix
-                    // exempted this edge as "one-shot, cannot self-feed": true of the paging restore,
-                    // onAppear and the pill, false of a stream. Coalescing to at most one scroll per turn
-                    // keeps the follow immediate to the eye and bounded per cycle.
+                    // for the same reason: a streaming turn mutates items once per delta, so scrolling
+                    // synchronously here would do it on nearly every update. Coalescing to at most one
+                    // scroll per turn keeps the follow immediate to the eye and bounded per cycle.
+                    // (This deferral was originally introduced as a crash fix and is not one - see the
+                    // note on scrollToBottom - but it is still the right shape for a per-delta follow.)
                     if isPinnedToBottom {
                         chaser.schedule {
                             // Re-checked at fire time: a geometry sample processed in between may have
@@ -360,9 +358,9 @@ public struct ChatView: View {
             isPinnedToBottom = true
         case .chase:
             // Deferred one runloop turn, coalesced across the burst of samples a settling layout
-            // emits (see ChatScrollChaser). Never scroll synchronously here: this callback runs
-            // inside the layout pass, and a scrollTo that re-dirties layout mid-pass can repeat
-            // within one display cycle until AppKit's layout-loop guard kills the app.
+            // emits (see ChatScrollChaser). Still worth not scrolling synchronously from a callback
+            // that runs inside the layout pass, though the AppKit kill this was written to prevent
+            // has a different cause - see ChatTranscriptScroller.stabilizeScrollerWidth.
             chaser.schedule {
                 // Re-checked at fire time: a sample processed between schedule and fire may have
                 // released the pin (reading back must not be yanked to the bottom).
@@ -375,17 +373,19 @@ public struct ChatView: View {
 
     /// `following` marks the streaming path - the geometry chase and the items follow, which fire many
     /// times a second while an answer arrives. Those scroll AppKit directly rather than through
-    /// ScrollViewProxy: a proxy scroll is applied by SwiftUI from inside NSHostingView.layout, where it
-    /// asks the view graph for an immediate update and so dirties constraints during the window's
-    /// layout pass - the _postWindowNeedsUpdateConstraints crash. Deferring the call never helped,
-    /// because the deferral controls when we ask, not when SwiftUI applies. See
-    /// ChatTranscriptScroller.swift for the full stack.
+    /// ScrollViewProxy, which keeps hundreds of pending scroll actions per session off the view graph
+    /// and lands on the true maximum offset instead of the 67pt-short resting place
+    /// `scrollTo(anchor: .bottom)` settles at.
+    ///
+    /// NOTE for anyone tracing the _postWindowNeedsUpdateConstraints crash here: this routing is NOT
+    /// what fixes it. That crash is the scroller-width layout loop - see
+    /// ChatTranscriptScroller.stabilizeScrollerWidth - and it runs with no scroll of any kind in
+    /// flight. Do not "harden" it by moving more call sites off the proxy.
     ///
     /// The one-shot scrolls (appear, a conversation loaded in place) stay on the proxy deliberately:
     /// they run before the transcript has laid out, where only SwiftUI can resolve "the bottom" - the
     /// clip view's document is still empty, so scrolling it would land at the top and need the chase to
-    /// rescue it a frame later. One pending action in an otherwise idle cycle is not what exhausts the
-    /// window's layout budget; hundreds during a stream are.
+    /// rescue it a frame later.
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true,
                                 following: Bool = false, source: String = "") {
         // Tell the tracker WE moved the viewport, so the samples the scroll view emits while it settles

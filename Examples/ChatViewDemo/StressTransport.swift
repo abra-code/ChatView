@@ -1,10 +1,14 @@
 // Examples/ChatViewDemo/StressTransport.swift
 //
 // A repro harness for the transcript layout-loop crash: an uncaught AppKit exception from
-// -[NSWindow(NSDisplayCycle) _postWindowNeedsUpdateConstraints], thrown while SwiftUI applies a
-// pending scroll action inside NSHostingView.layout. It needs a LONG answer streamed FAST into a
-// pinned viewport of AppKit-backed (RichText) rows - i.e. what a "summarize this PDF" turn looks
-// like in a host - which no interactive demo screen produces on its own.
+// -[NSWindow(NSDisplayCycle) _postWindowNeedsUpdateConstraints]. It needs a LONG answer streamed FAST
+// into a pinned viewport of AppKit-backed (RichText) rows - i.e. what a "summarize this PDF" turn
+// looks like in a host - which no interactive demo screen produces on its own.
+//
+// The cause is a scroller-width loop, NOT a pending scroll action as this comment once claimed (see
+// ChatTranscriptScroller.stabilizeScrollerWidth). To actually reproduce it, pair this with
+// CHATVIEW_DEMO_LEGACY_SCROLLERS=1 and a window short enough that the transcript's height lands near
+// the viewport's - on a machine with overlay scrollers, streaming alone will never trigger it.
 //
 // Registered under the protocol name "stress" and driven entirely from start(): the turns fire
 // without a prompt, so `CHATVIEW_DEMO_SCREEN=stress swift run ChatViewDemo` is a self-running
