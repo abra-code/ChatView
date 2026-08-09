@@ -441,6 +441,33 @@ public struct SessionConfigOption: Identifiable, Equatable, Sendable {
     }
 }
 
+/// Identity and capabilities of the live agent session, emitted once the session is
+/// established (ACP: after initialize + session/new or session/load). Additive to the
+/// frozen transport contract: transports that do not emit it are unaffected. Codable so
+/// the store can hand it to a persisting host through the entry channel.
+public struct AgentSessionInfo: Equatable, Sendable, Codable {
+    public let sessionId: String
+    public let agentName: String?       // initialize agentInfo.name
+    public let agentVersion: String?    // initialize agentInfo.version
+    public let protocolVersion: Int?
+    public let agentPid: Int?           // the spawned subprocess, for host-side lifecycle registries
+    public let canLoadSession: Bool     // agentCapabilities.loadSession
+    public let canPrime: Bool           // agentCapabilities.sessionPrime (mlx-agent extension)
+    public let resumed: Bool            // true when this session came from session/load
+
+    public init(sessionId: String, agentName: String?, agentVersion: String?, protocolVersion: Int?,
+                agentPid: Int?, canLoadSession: Bool, canPrime: Bool, resumed: Bool) {
+        self.sessionId = sessionId
+        self.agentName = agentName
+        self.agentVersion = agentVersion
+        self.protocolVersion = protocolVersion
+        self.agentPid = agentPid
+        self.canLoadSession = canLoadSession
+        self.canPrime = canPrime
+        self.resumed = resumed
+    }
+}
+
 /// A slash command the agent currently offers (ACP `available_commands_update`,
 /// re-emitted whole as the set changes). Selecting one just fills the composer:
 /// commands are SENT as ordinary prompt text ("/name args") for the agent to
@@ -816,6 +843,7 @@ public enum ChatConnectionState: String, Sendable, Equatable, Codable {
 /// "agentic" demo style); the ACP transport emits the full vocabulary.
 public enum ChatEvent: Sendable {
     case sessionReady(sessionID: String, configOptions: [SessionConfigOption])
+    case sessionInfo(AgentSessionInfo)                     // agent identity + capabilities, once per established session
     case messageStart(itemID: String, role: ChatRole)
     case messageDelta(itemID: String, text: String)        // streaming token(s)
     case messageEnd(itemID: String, stopReason: String?)   // nil stopReason: the message closed but the

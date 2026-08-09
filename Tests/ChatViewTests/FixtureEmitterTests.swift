@@ -156,9 +156,11 @@ private enum EventCodec {
         case .connectionStateChanged(let state):
             return ["event": "connectionStateChanged", "state": state.rawValue]
 
-        // Not represented in fixtures (carry non-Codable option/command vocabularies whose
-        // transient store effects are covered by the ported store unit tests, not the transcript).
-        case .sessionReady, .currentModeChanged, .commandsAvailable, .configOptionsChanged:
+        // Not represented in fixtures (carry option/command vocabularies or session identity,
+        // none of which belong in a transcript; their transient store effects are covered by
+        // the ported store unit tests). The switch stays exhaustive on purpose: every new
+        // ChatEvent must be decided about here rather than swallowed by a `default:`.
+        case .sessionReady, .sessionInfo, .currentModeChanged, .commandsAvailable, .configOptionsChanged:
             throw FixtureError.unsupportedEvent("\(event)")
         }
     }

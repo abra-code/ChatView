@@ -66,6 +66,7 @@ final class ChatStore: ObservableObject {
     @Published private(set) var plan: [PlanEntry] = []    // the agent's current plan (whole-list replace)
     @Published private(set) var usage: UsageInfo?         // latest token/cost status, when the agent reports it
     @Published private(set) var configOptions: [SessionConfigOption] = []   // model/mode/... advertised at session start
+    @Published private(set) var sessionInfo: AgentSessionInfo?              // identity/capabilities of the live agent session (nil until one is established)
     @Published private(set) var availableCommands: [SlashCommand] = []      // the agent's slash commands (composer menu)
     @Published private(set) var contextState: ChatContextState = .synced    // does the agent context match the display (status-bar indicator)
     @Published var draft: String = ""                     // composer text
@@ -369,6 +370,9 @@ final class ChatStore: ObservableObject {
         // supersession flag from the old one must not swallow a real turn end.
         wireContext = []
         supersededTurnPending = false
+        // A new transport is a new agent session: the old one's identity must not linger
+        // (it names a pid and a session id that are both gone) until the new one reports.
+        sessionInfo = nil
         // If a transcript was restored before the transport existed (content injected before a
         // viable config), seed the new transport's wire history from it so a continue carries
         // context - applying the last prime directive: an immediate directive seeds the wire
@@ -678,6 +682,7 @@ final class ChatStore: ObservableObject {
         isStreaming = false
         awaitingReply = false
         connectionState = .connecting   // reset for cleanliness; the composer is already gated by isConfigured while torn down
+        sessionInfo = nil               // the agent is being stopped; its session id and pid name nothing after this
         let transport = self.transport
         self.transport = nil
         Task { await transport?.stop() }
@@ -691,6 +696,10 @@ final class ChatStore: ObservableObject {
         case .sessionReady(let sessionID, let options):
             configOptions = options
             logger.log("Chat session ready: \(sessionID)", .verbose)
+
+        case .sessionInfo(let info):
+            sessionInfo = info
+            fireEntry(type: "session", id: info.sessionId, data: info)
 
         case .messageStart(let itemID, let role):
             finalizeOpenThoughts()

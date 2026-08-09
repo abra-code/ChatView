@@ -150,6 +150,30 @@ final class ChatTranscriptSeamTests: XCTestCase {
         XCTAssertEqual(envelopes[1].id, "tool1")
     }
 
+    func testSessionEntryEnvelopeFires() {
+        // Session identity is not a transcript item: it reaches a persisting host only
+        // through the entry channel (type "session"), and it publishes on the store for the
+        // status surfaces. One event, one envelope.
+        let sink = EntrySink()
+        let store = makeStore(entrySink: sink)
+        store.route(.sessionInfo(AgentSessionInfo(sessionId: "ses-42", agentName: "FakeAgent",
+                                                  agentVersion: "9.9", protocolVersion: 1,
+                                                  agentPid: 4242, canLoadSession: true,
+                                                  canPrime: false, resumed: false)))
+
+        XCTAssertEqual(store.sessionInfo?.sessionId, "ses-42", "the store publishes the live session identity")
+        XCTAssertEqual(store.sessionInfo?.agentName, "FakeAgent")
+        XCTAssertEqual(store.items.count, 0, "session identity must not append a transcript item")
+
+        let envelopes = sink.envelopes()
+        XCTAssertEqual(envelopes.map(\.type), ["session"], "exactly one session envelope fires")
+        XCTAssertEqual(envelopes.first?.id, "ses-42")
+        let json = sink.rawJSONs().first ?? ""
+        XCTAssertTrue(json.contains("\"type\":\"session\""), "the envelope names the entry type: \(json)")
+        XCTAssertTrue(json.contains("\"sessionId\":\"ses-42\""), "the payload carries the agent's session id: \(json)")
+        XCTAssertTrue(json.contains("\"agentPid\":4242"), "the payload carries the agent pid for host lifecycle registries: \(json)")
+    }
+
     func testNoEntryActionMeansNoFiring() {
         // Without entry events enabled (no sink), driving a turn must not crash / fire anything.
         let store = makeStore()

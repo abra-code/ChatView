@@ -45,9 +45,13 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
     private let command: [String]
     private let cwd: String
     private let mcpServers: [[String: Any]]
+    private let env: [String: String]
+    let startupTimeout: TimeInterval                  // internal so tests can pin the "absent means none" default
 
     private let lock = NSLock()
     private var connection: ACPConnection?
+    private var startupTimedOut = false               // the startup watchdog fired (wording for the error)
+    private var startupFinished = false               // start() reached its end; the watchdog must no longer fire
     private var sessionID: String?
     private var sessionOptions: [SessionConfigOption] = []   // retained for the setter's fallback mapping
     private var promptTask: Task<Void, Never>?
@@ -84,7 +88,10 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
 
     /// `transport` config: `command` (argv array, required), `cwd` (string, defaults to
     /// the host's current directory), `mcpServers` (array of ACP server declarations,
-    /// passed through verbatim).
+    /// passed through verbatim), `env` (string-to-string map, merged over the inherited
+    /// environment; `PATH` here governs bare-name resolution of `command[0]`),
+    /// `startupTimeoutSeconds` (number; absent or <= 0 means NO timeout - the bundled
+    /// local agent may legitimately take minutes to load a large model).
     init(config: ChatTransportConfig, logger: any ChatLogger) throws {
         guard let command = config.stringArray("command"), !command.isEmpty else {
             throw ACPConnectionError(code: nil, message: "transport.command (a non-empty string array) is required for protocol \"acp\"")
@@ -96,6 +103,19 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
         // relative paths once here, so the launch and the wire see the same absolute path.
         self.cwd = Self.absoluteCwd(config.string("cwd"))
         self.mcpServers = config.dictionaryArray("mcpServers") ?? []
+        let rawEnv = config.dictionary("env") ?? [:]
+        let stringEnv = rawEnv.compactMapValues { $0 as? String }
+        self.env = stringEnv
+        if stringEnv.count != rawEnv.count {
+            let dropped = rawEnv.keys.filter { stringEnv[$0] == nil }.sorted()
+            logger.log("ACP: transport.env values must be strings; ignoring \(dropped.joined(separator: ", "))", .warning)
+        }
+        // Clamped and finite-checked, because this arrives as host JSON: a stray 1e12 (or an
+        // Infinity or NaN from a plist-sourced number) would otherwise reach the UInt64
+        // nanosecond conversion below and trap, taking the whole host down rather than
+        // mistiming one launch. A day is far past any legitimate agent startup.
+        let rawTimeout = config.double("startupTimeoutSeconds") ?? 0
+        self.startupTimeout = rawTimeout.isFinite ? min(max(rawTimeout, 0), 86_400) : 0
         self.logger = logger
         var captured: AsyncStream<ChatEvent>.Continuation!
         self.events = AsyncStream(bufferingPolicy: .unbounded) { captured = $0 }
@@ -119,6 +139,14 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
     // MARK: - ChatTransport
 
     func start() async {
+        // The store builds a fresh transport per attach, so this runs once per instance - but
+        // the startup latches below are one-shot, and a future flow that re-entered start()
+        // on the same transport would find the watchdog silently disarmed and a stale timeout
+        // flag mislabelling the next failure. Cheap insurance, no behavior change today.
+        lock.withLock {
+            startupFinished = false
+            startupTimedOut = false
+        }
         let connection = ACPConnection(
             logger: logger,
             onNotification: { [weak self] method, params in
@@ -133,8 +161,45 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
         )
         lock.withLock { self.connection = connection }
 
+        // Startup watchdog: on expiry, stop the CONNECTION. handleClose then fails every
+        // pending continuation, so the awaited initialize / session/new throws and the
+        // existing catch below reports it. Deliberately NOT a task group racing the request:
+        // ACPConnection.request ignores cancellation, and a throwing group awaits its
+        // children before rethrowing, so the group would wait forever on the very request
+        // the timeout is meant to abandon.
+        let watchdog: Task<Void, Never>?
+        if startupTimeout > 0 {
+            let seconds = startupTimeout
+            watchdog = Task { [weak self, weak connection, logger] in
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                guard let self else { return }
+                // Decide against start()'s completion under the SAME lock acquisition that
+                // latches the timeout. Task.isCancelled alone is not enough: a session that
+                // becomes ready between that check and connection.stop() would be torn down
+                // with no error event at all, leaving a chat window that looks live and is
+                // permanently dead. That window is real whenever an agent's true startup
+                // time sits near the configured timeout.
+                let expired = self.lock.withLock { () -> Bool in
+                    if self.startupFinished { return false }
+                    self.startupTimedOut = true
+                    return true
+                }
+                guard expired else { return }
+                logger.log("ACP: agent did not become ready within \(Self.secondsText(seconds))s; stopping it", .warning)
+                connection?.stop()
+            }
+        } else {
+            watchdog = nil
+        }
+        // Fires on every exit from start() - success, throw, and the catch. The flag is
+        // published BEFORE the cancel, so a watchdog already past its sleep still sees it.
+        defer {
+            lock.withLock { startupFinished = true }
+            watchdog?.cancel()
+        }
+
         do {
-            try connection.launch(command: command, cwd: cwd)
+            try connection.launch(command: command, cwd: cwd, environment: env)
             let initResult = try await connection.request("initialize", [
                 "protocolVersion": 1,
                 "clientCapabilities": [
@@ -149,6 +214,8 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
                 logger.log("ACP: agent negotiated protocol version \(version) (client speaks 1); continuing", .warning)
             }
             let agentCaps = initResult["agentCapabilities"] as? [String: Any]
+            let agentInfo = initResult["agentInfo"] as? [String: Any]
+            let negotiatedVersion = (initResult["protocolVersion"] as? NSNumber)?.intValue
             lock.withLock { supportsPrime = (agentCaps?["sessionPrime"] as? Bool) ?? false }
             let authMethods = (initResult["authMethods"] as? [[String: Any]]) ?? []
 
@@ -167,7 +234,18 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
                 // primeTask directly - a separate flush lock could then overwrite it with
                 // the older stash and put two primes on the wire. Registered as primeTask
                 // so a prompt racing in right after sessionReady chains behind it.
-                lock.withLock {
+                // The same acquisition also settles the race with the startup watchdog, in the
+                // only place it can be settled: the watchdog latches startupTimedOut under
+                // this lock, so whichever side takes it first wins outright. Publishing the
+                // session first and marking startup finished later (in the defer) would leave
+                // a window where the watchdog stops the connection AFTER sessionReady - and
+                // because that teardown runs with notify: false, the user would be left with a
+                // window that looks ready over an agent that is gone.
+                let lostToWatchdog = lock.withLock { () -> Bool in
+                    if startupTimedOut {
+                        return true
+                    }
+                    startupFinished = true
                     self.sessionID = sessionID
                     self.sessionOptions = options
                     if let stash = pendingPrime {
@@ -177,21 +255,55 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
                             await self?.sendPrime(stash)
                         }
                     }
+                    return false
+                }
+                if lostToWatchdog {
+                    throw ACPConnectionError(code: nil, message: "the startup watchdog stopped the agent")
                 }
                 eventSink.yield(.sessionReady(sessionID: sessionID, configOptions: options))
+                eventSink.yield(.sessionInfo(AgentSessionInfo(
+                    sessionId: sessionID,
+                    agentName: agentInfo?["name"] as? String,
+                    agentVersion: agentInfo?["version"] as? String,
+                    protocolVersion: negotiatedVersion,
+                    agentPid: connection.processID.map(Int.init),
+                    canLoadSession: (agentCaps?["loadSession"] as? Bool) ?? false,
+                    canPrime: (agentCaps?["sessionPrime"] as? Bool) ?? false,
+                    resumed: false)))
             } catch {
                 // A common session/new failure is an agent that requires auth first; name
                 // the advertised methods so that case is actionable (auth UX is a later
                 // milestone) - but phrase it as a possibility, not a diagnosis: session/new
-                // also fails for non-auth reasons (an agent-side internal error, say).
-                if authMethods.isEmpty {
+                // also fails for non-auth reasons (an agent-side internal error, say). A
+                // timeout is never one of them: the outer catch already has the right words,
+                // and blaming login for a hang would send the user off fixing the wrong thing.
+                if authMethods.isEmpty || lock.withLock({ startupTimedOut }) {
                     throw error
                 }
                 let names = authMethods.compactMap { $0["id"] as? String ?? $0["name"] as? String }
                 throw ACPConnectionError(code: nil, message: "\(error). If the agent requires login, authenticate outside the chat element first (it advertises: \(names.joined(separator: ", ")))")
             }
         } catch {
-            eventSink.yield(.error(message: "ACP agent failed to start: \(error)", recoverable: false))
+            // Name the timeout rather than the closed connection it produced, and carry the
+            // agent's last stderr lines: /usr/bin/env's own "no such file or directory" and
+            // an agent's fatal startup message both arrive there and are the actual diagnosis.
+            let timedOut = lock.withLock { startupTimedOut }
+            var message = timedOut
+                // Deliberately does not say "no response to initialize or session/new": the
+                // watchdog also wins narrow races against a session that had just answered,
+                // and naming a request that did reply would send the user hunting a hang that
+                // never happened.
+                ? "The ACP agent did not become ready within \(Self.secondsText(startupTimeout))s; the startup timeout stopped it"
+                : "ACP agent failed to start: \(error)"
+            // Pick up stderr the readability handler has not delivered yet: the failure that
+            // brought us here (stdout EOF / process exit) races that handler, and stop()
+            // below removes it, so without this the diagnosis is silently lost.
+            connection.drainStderr()
+            let tail = connection.stderrTailText()
+            if !tail.isEmpty {
+                message += "\nAgent output:\n\(tail)"
+            }
+            eventSink.yield(.error(message: message, recoverable: false))
             // No session, no retry path: do not leave the agent subprocess running
             // until the element's teardown gets around to it.
             connection.stop()
@@ -424,6 +536,18 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
         default:
             return nil
         }
+    }
+
+    /// A timeout rendered for a human: whole seconds stay whole ("30"), a sub-second timeout
+    /// keeps its fraction rather than reading as "0".
+    static func secondsText(_ seconds: TimeInterval) -> String {
+        String(format: "%g", seconds)
+    }
+
+    /// The spawned agent's pid while the connection is live - the same value `.sessionInfo`
+    /// publishes. Internal so tests can watch the subprocess directly.
+    var agentProcessID: Int32? {
+        lock.withLock { connection }?.processID
     }
 
     func stop() async {

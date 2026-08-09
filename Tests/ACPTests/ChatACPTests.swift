@@ -584,6 +584,8 @@ final class ACPFakeAgentTests: XCTestCase {
             switch event {
             case .sessionReady(let sessionID, _):
                 log.append("ready:\(sessionID)")
+            case .sessionInfo(let info):
+                log.append("info:\(info.sessionId)")
             case .messageStart(_, let role):
                 log.append("start:\(role.rawValue)")
             case .messageDelta(_, let text):
@@ -604,7 +606,9 @@ final class ACPFakeAgentTests: XCTestCase {
         }
         await transport.stop()
 
-        XCTAssertEqual(log, ["ready:fake-session", "start:agent", "delta:Hi!", "end:end_turn"])
+        // sessionInfo (agent identity) follows sessionReady on every established session,
+        // before any turn events; ChatACPLaunchTests pins its payload.
+        XCTAssertEqual(log, ["ready:fake-session", "info:fake-session", "start:agent", "delta:Hi!", "end:end_turn"])
     }
 
     // The setter round trip through the real pipes: session/set_config_option's result
