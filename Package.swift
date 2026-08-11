@@ -27,6 +27,9 @@ let package = Package(
         // A standalone SwiftUI demo app (macOS): `swift run ChatViewDemo`. Wires ChatView directly
         // across People / Group / Agent / ReadOnly screens - the Apple twin of the Kotlin android/demo module.
         .executable(name: "ChatViewDemo", targets: ["ChatViewDemo"]),
+        // The bridge: re-hosts a local stdio ACP agent over a WebSocket so phones can drive it.
+        // macOS only (it spawns the agent); this is the SERVER half of the `acp-remote` transport.
+        .executable(name: "chatview-acp-bridge", targets: ["chatview-acp-bridge"]),
     ],
     dependencies: [
         // Sibling standalone components (github.com/abra-code), consumed as versioned releases.
@@ -58,7 +61,14 @@ let package = Package(
             path: "Examples/ChatViewDemo",
             resources: [.process("transcript-v2-group.json")]
         ),
+        // The bridge core: session registry, seq-stamped event log, WebSocket listener, and the
+        // routing that re-hosts one stdio ACP agent for many network clients. It reuses
+        // ChatViewACP's `package`-visible ACPConnection for the subprocess half rather than
+        // re-implementing stdio framing. Every file inside is `#if os(macOS)`.
+        .target(name: "ACPBridgeCore", dependencies: ["ChatView", "ChatViewACP"], path: "Sources/ACPBridge"),
+        .executableTarget(name: "chatview-acp-bridge", dependencies: ["ACPBridgeCore"], path: "Sources/ACPBridgeCLI"),
         .testTarget(name: "ChatViewTests", dependencies: ["ChatView"], path: "Tests/ChatViewTests"),
+        .testTarget(name: "ACPBridgeTests", dependencies: ["ACPBridgeCore", "ChatViewACP", "ChatView"], path: "Tests/ACPBridgeTests"),
         .testTarget(name: "ChatViewACPTests", dependencies: ["ChatViewACP", "ChatView"], path: "Tests/ACPTests"),
         .testTarget(name: "ChatViewOpenAITests", dependencies: ["ChatViewOpenAI", "ChatView"], path: "Tests/OpenAITests"),
     ]

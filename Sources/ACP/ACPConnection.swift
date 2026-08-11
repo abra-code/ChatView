@@ -24,11 +24,19 @@ import Foundation
 import ChatView
 
 /// An error the agent returned for a JSON-RPC request, or a connection failure.
-struct ACPConnectionError: Error, CustomStringConvertible {
-    let code: Int?
-    let message: String
+///
+/// `package` rather than internal so the bridge target (ACPBridgeCore) can reuse this whole
+/// process/stdio layer without any of it becoming public API of the ChatViewACP product.
+package struct ACPConnectionError: Error, CustomStringConvertible {
+    package let code: Int?
+    package let message: String
 
-    var description: String {
+    package init(code: Int?, message: String) {
+        self.code = code
+        self.message = message
+    }
+
+    package var description: String {
         if let code {
             return "\(message) (code \(code))"
         }
@@ -36,15 +44,15 @@ struct ACPConnectionError: Error, CustomStringConvertible {
     }
 }
 
-final class ACPConnection: @unchecked Sendable {
+package final class ACPConnection: @unchecked Sendable {
 
     /// A notification from the agent (method, params).
-    typealias NotificationHandler = @Sendable (String, [String: Any]) -> Void
+    package typealias NotificationHandler = @Sendable (String, [String: Any]) -> Void
     /// A request from the agent (method, params) -> result. Return nil to answer with
     /// a JSON-RPC "method not found" error (the capability was not advertised).
-    typealias RequestHandler = @Sendable (String, [String: Any]) async -> [String: Any]?
+    package typealias RequestHandler = @Sendable (String, [String: Any]) async -> [String: Any]?
     /// The agent process ended (exit status, nil when only the stream closed).
-    typealias CloseHandler = @Sendable (Int32?) -> Void
+    package typealias CloseHandler = @Sendable (Int32?) -> Void
 
     private let logger: any ChatLogger
     private let onNotification: NotificationHandler
@@ -77,7 +85,7 @@ final class ACPConnection: @unchecked Sendable {
     private static let stderrChunkSize = 8_192      // bytes per read(2)
     private static let stderrReadBudget = 8         // reads per invocation (a full pipe buffer); see readStderr
 
-    init(logger: any ChatLogger,
+    package init(logger: any ChatLogger,
          onNotification: @escaping NotificationHandler,
          onRequest: @escaping RequestHandler,
          onClose: @escaping CloseHandler) {
@@ -110,7 +118,7 @@ final class ACPConnection: @unchecked Sendable {
     /// `environment` entries are merged OVER the inherited environment (everything not
     /// named is still inherited). Because /usr/bin/env itself receives the merged
     /// environment, a PATH entry here governs how a bare command name resolves.
-    func launch(command: [String], cwd: String?, environment: [String: String] = [:]) throws {
+    package func launch(command: [String], cwd: String?, environment: [String: String] = [:]) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = command
@@ -280,7 +288,7 @@ final class ACPConnection: @unchecked Sendable {
     /// front of the user (and, for a persisting host, on disk) - it is the agent's own
     /// output verbatim, so an agent that prints credentials at startup prints them there
     /// too. Bounded so a noisy agent cannot flood the transcript.
-    func stderrTailText(maxLines: Int = 12) -> String {
+    package func stderrTailText(maxLines: Int = 12) -> String {
         let text = stderrLock.withLock { stderrTail.suffix(maxLines).joined(separator: "\n") }
         return text.count > Self.stderrTailTextMax ? String(text.suffix(Self.stderrTailTextMax)) : text
     }
@@ -298,7 +306,7 @@ final class ACPConnection: @unchecked Sendable {
     /// published rather than half here and half arriving later. Safe against a handler block
     /// already in flight: both readers go through readStderr, which is non-blocking and
     /// serialized.
-    func drainStderr() {
+    package func drainStderr() {
         errPipe.fileHandleForReading.readabilityHandler = nil
         let (lines, _) = readStderr()
         for line in lines {
@@ -315,7 +323,7 @@ final class ACPConnection: @unchecked Sendable {
     }
 
     /// The spawned agent's pid while it runs, for host-side lifecycle registries.
-    var processID: Int32? {
+    package var processID: Int32? {
         lock.withLock { process?.processIdentifier }
     }
 
@@ -335,7 +343,7 @@ final class ACPConnection: @unchecked Sendable {
 
     /// Sends a request and suspends until the agent responds. Throws the agent's
     /// JSON-RPC error, or a connection error if the agent is gone.
-    func request(_ method: String, _ params: [String: Any]) async throws -> [String: Any] {
+    package func request(_ method: String, _ params: [String: Any]) async throws -> [String: Any] {
         let id = lock.withLock { () -> Int in
             let id = nextRequestID
             nextRequestID += 1
@@ -358,7 +366,7 @@ final class ACPConnection: @unchecked Sendable {
     }
 
     /// Sends a notification (no response expected).
-    func notify(_ method: String, _ params: [String: Any]) {
+    package func notify(_ method: String, _ params: [String: Any]) {
         send(["jsonrpc": "2.0", "method": method, "params": params])
     }
 
@@ -376,7 +384,7 @@ final class ACPConnection: @unchecked Sendable {
     /// One pre-existing limitation this cannot promise around: `send` holds `lock` across a
     /// blocking write, so an agent that stops draining its stdin while a large prompt is
     /// being written delays this call at its first lock acquisition.
-    func stop() {
+    package func stop() {
         let alreadyStopping = lock.withLock { () -> Bool in
             if stopRequested {
                 return true
