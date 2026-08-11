@@ -48,6 +48,7 @@ package struct BridgeConfig: Decodable, Sendable {
     package var token: String?
     package var tokenFile: String?
     package var permissionTimeoutSeconds: Double
+    package var turnTimeoutSeconds: Double
     package var logDir: String
     package var maxLogEntriesPerSession: Int
     package var retainEndedSessionsDays: Int
@@ -57,7 +58,7 @@ package struct BridgeConfig: Decodable, Sendable {
         "~/Library/Application Support/chatview-acp-bridge"
 
     private enum CodingKeys: String, CodingKey {
-        case listen, agent, token, tokenFile, permissionTimeoutSeconds
+        case listen, agent, token, tokenFile, permissionTimeoutSeconds, turnTimeoutSeconds
         case logDir, maxLogEntriesPerSession, retainEndedSessionsDays, handshakeDeadlineSeconds
     }
 
@@ -68,6 +69,10 @@ package struct BridgeConfig: Decodable, Sendable {
         token = try container.decodeIfPresent(String.self, forKey: .token)
         tokenFile = try container.decodeIfPresent(String.self, forKey: .tokenFile)
         permissionTimeoutSeconds = try container.decodeIfPresent(Double.self, forKey: .permissionTimeoutSeconds) ?? 900
+        // 0 = wait forever, and that IS the default: a legitimate agentic turn can run for a
+        // very long time, and a bridge that silently truncates real work is worse than one that
+        // occasionally needs a restart. Operators who want the safety net opt in.
+        turnTimeoutSeconds = try container.decodeIfPresent(Double.self, forKey: .turnTimeoutSeconds) ?? 0
         logDir = try container.decodeIfPresent(String.self, forKey: .logDir)
             ?? (Self.defaultSupportDirectory + "/sessions")
         maxLogEntriesPerSession = try container.decodeIfPresent(Int.self, forKey: .maxLogEntriesPerSession) ?? 200_000
@@ -81,6 +86,7 @@ package struct BridgeConfig: Decodable, Sendable {
                  token: String? = nil,
                  tokenFile: String? = nil,
                  permissionTimeoutSeconds: Double = 900,
+                 turnTimeoutSeconds: Double = 0,
                  logDir: String,
                  maxLogEntriesPerSession: Int = 200_000,
                  retainEndedSessionsDays: Int = 14,
@@ -90,6 +96,7 @@ package struct BridgeConfig: Decodable, Sendable {
         self.token = token
         self.tokenFile = tokenFile
         self.permissionTimeoutSeconds = permissionTimeoutSeconds
+        self.turnTimeoutSeconds = turnTimeoutSeconds
         self.logDir = logDir
         self.maxLogEntriesPerSession = maxLogEntriesPerSession
         self.retainEndedSessionsDays = retainEndedSessionsDays

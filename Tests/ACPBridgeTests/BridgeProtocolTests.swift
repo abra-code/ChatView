@@ -222,6 +222,7 @@ final class BridgeProtocolTests: XCTestCase {
 
     private func startBridge(script: String,
                              permissionTimeout: Double = 900,
+                             turnTimeout: Double = 0,
                              handshakeDeadline: Double = 10,
                              maxLogEntries: Int = 200_000) throws -> UInt16 {
         let path = try writeAgent(script)
@@ -229,6 +230,7 @@ final class BridgeProtocolTests: XCTestCase {
                                   agent: BridgeAgentConfig(command: [path], cwd: directory.path),
                                   token: token,
                                   permissionTimeoutSeconds: permissionTimeout,
+                                  turnTimeoutSeconds: turnTimeout,
                                   logDir: directory.appendingPathComponent("sessions").path,
                                   maxLogEntriesPerSession: maxLogEntries,
                                   handshakeDeadlineSeconds: handshakeDeadline)
@@ -376,6 +378,36 @@ final class BridgeProtocolTests: XCTestCase {
                           "I8: a client that never sees turn_ended keeps its composer disabled forever")
         XCTAssertEqual(client.received(method: "bridge/turn_ended").first?["stopReason"] as? String, "error")
         XCTAssertEqual(client.received(method: "bridge/session_ended").first?["reason"] as? String, "agent_exit")
+    }
+
+    /// A hung agent must not wedge the session permanently (plan 4.3a).
+    func testHungAgentTurnIsWatchdogged() throws {
+        // Accepts the prompt and never answers it.
+        let hang = """
+              while IFS= read -r ignored; do : ; done
+        """
+        let port = try startBridge(script: agentScript(promptBody: hang), turnTimeout: 1)
+        let client = connect(port: port)
+        defer { client.close() }
+
+        _ = client.request("session/new", [:], timeout: 10)
+        let first = client.request("session/prompt", [
+            "sessionId": "sess-1", "prompt": [["type": "text", "text": "hello"]], "echoKey": "E1",
+        ], timeout: 5)
+        XCTAssertEqual((first?["result"] as? [String: Any])?["turn"] as? Int, 1)
+
+        client.wait("the watchdog to end the hung turn", timeout: 10) {
+            !client.received(method: "bridge/turn_ended").isEmpty
+        }
+        XCTAssertEqual(client.received(method: "bridge/turn_ended").count, 1)
+        XCTAssertEqual(client.received(method: "bridge/turn_ended").first?["stopReason"] as? String, "error")
+
+        // The point of the watchdog: the session is usable again, not wedged on -32002.
+        let second = client.request("session/prompt", [
+            "sessionId": "sess-1", "prompt": [["type": "text", "text": "again"]], "echoKey": "E2",
+        ], timeout: 5)
+        XCTAssertEqual((second?["result"] as? [String: Any])?["turn"] as? Int, 2,
+                       "a watchdogged session must accept the next prompt")
     }
 
     // MARK: - Attach and replay (item 1.5, invariant I6)

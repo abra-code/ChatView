@@ -124,6 +124,16 @@ package final class ACPBridge: @unchecked Sendable {
         server.connectionCount
     }
 
+    /// Test seam: drop every attached client without touching the agent or the log, which is
+    /// what a network failure looks like from the bridge side. The sessions stay live and the
+    /// turns keep running - that is the whole property the remote transport is built around.
+    package func dropAllClientsForTesting() {
+        let all: [BridgeClientConnection] = lock.withLock { clients.values.map(\.connection) }
+        for connection in all {
+            connection.close()
+        }
+    }
+
     // MARK: - Client connections
 
     private func accept(_ connection: BridgeClientConnection) {
@@ -394,6 +404,22 @@ package final class ACPBridge: @unchecked Sendable {
             "echoKey": echoKey,
             "content": content,
         ])
+
+        // A hung agent would otherwise leave activeTurn set forever: no turn_ended for the
+        // client (which I9 forbids it from inventing) and -32002 on every later prompt, i.e. a
+        // session wedged until the bridge restarts. Off by default; see plan 4.3a.
+        if config.turnTimeoutSeconds > 0 {
+            let limit = config.turnTimeoutSeconds
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(limit * 1_000_000_000))
+                guard let self, self.store.activeTurn(sessionID: sessionID) == turn else {
+                    return
+                }
+                self.logger.log("acp-bridge: turn \(turn) of '\(sessionID)' exceeded \(limit)s; ending it", .warning)
+                // Through finishTurn, so I8's winner check makes a late real answer a no-op.
+                self.finishTurn(sessionID: sessionID, turn: turn, stopReason: "error")
+            }
+        }
 
         let promptParams = JSONPayload(["sessionId": sessionID, "prompt": content])
         Task { [weak self] in
