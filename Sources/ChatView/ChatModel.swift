@@ -854,6 +854,12 @@ public enum ChatEvent: Sendable {
     case toolCall(ToolCallModel)                           // a new tool invocation
     case toolCallUpdate(ToolCallUpdate)                    // mutate that card in place
     case permissionRequest(PermissionRequest)              // blocks the gated call until answered
+    case permissionResolved(requestID: String)             // an out-of-band resolution of a pending request:
+                                                           // another device answered it, or a remote bridge
+                                                           // timed it out. The store clears the matching gate;
+                                                           // an unknown id is a no-op, never an error - a
+                                                           // reattaching client can legitimately hear about a
+                                                           // resolution for a request it never saw.
     case plan([PlanEntry])                                 // the agent's WHOLE current plan (replace, not merge)
     case usage(UsageInfo)                                  // token / cost status (latest wins)
     case currentModeChanged(modeID: String)                // ACP current_mode_update; updates the mode option
@@ -862,6 +868,18 @@ public enum ChatEvent: Sendable {
     case image(itemID: String, role: ChatRole, image: ChatImage)   // a standalone image element
     case system(text: String)
     case error(message: String, recoverable: Bool)
+
+    /// A resumable transport reporting how far the host's persisted transcript now reaches.
+    /// The store forwards it as one `.resumeCheckpoint` host event; it is not a transcript
+    /// item and never appears in `items`. Emitted only at turn boundaries, where the
+    /// transcript is quiescent, so that "what the host has stored" and "this cursor" describe
+    /// the same instant; see the acp-remote plan's section 4.2a.
+    ///
+    /// REQUIRES `ChatConfiguration.emitsEntryEvents`. A cursor is only meaningful next to the
+    /// transcript it was minted against, and `.entry` is how that transcript reaches the host,
+    /// so a store that is not emitting entries drops checkpoints instead of handing out a
+    /// cursor with nothing to pair it with.
+    case resumeCheckpoint(sessionID: String, afterSeq: Int)
 
     // --- P2P (v2) additive vocabulary. Existing (streaming / agentic) transports never
     //     emit these; the store routes them in P3. All are transport -> store.

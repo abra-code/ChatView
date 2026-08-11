@@ -109,6 +109,10 @@ private enum EventCodec {
             ]
             if let toolCallID = r.toolCallID { req["toolCallID"] = toolCallID }
             return ["event": "permissionRequest", "request": req]
+        case .permissionResolved(let requestID):
+            return ["event": "permissionResolved", "requestID": requestID]
+        case .resumeCheckpoint(let sessionID, let afterSeq):
+            return ["event": "resumeCheckpoint", "sessionID": sessionID, "afterSeq": afterSeq]
         case .plan(let entries):
             return ["event": "plan", "plan": try jsonValue(entries)]
         case .usage(let info):
@@ -206,6 +210,17 @@ private enum EventCodec {
                 diff: try (t["diff"]).map { try decodeModel(ToolCallDiff.self, from: $0) },
                 rawInput: t["rawInput"] as? String,
                 rawOutput: t["rawOutput"] as? String))
+        case "permissionResolved":
+            guard let requestID = dict["requestID"] as? String else {
+                throw FixtureError.malformed("permissionResolved.requestID")
+            }
+            return .permissionResolved(requestID: requestID)
+        case "resumeCheckpoint":
+            guard let sessionID = dict["sessionID"] as? String,
+                  let afterSeq = dict["afterSeq"] as? Int else {
+                throw FixtureError.malformed("resumeCheckpoint")
+            }
+            return .resumeCheckpoint(sessionID: sessionID, afterSeq: afterSeq)
         case "permissionRequest":
             guard let r = dict["request"] as? [String: Any],
                   let id = r["id"] as? String, let title = r["title"] as? String,

@@ -119,18 +119,18 @@ final class ACPConnectionTests: XCTestCase {
 final class ACPParsingTests: XCTestCase {
 
     func testContentTextJoinsAndNotesNonText() {
-        XCTAssertEqual(ACPChatTransport.contentText(["type": "text", "text": "hello"]), "hello")
-        let joined = ACPChatTransport.contentText([
+        XCTAssertEqual(ACPWire.contentText(["type": "text", "text": "hello"]), "hello")
+        let joined = ACPWire.contentText([
             ["type": "text", "text": "first"],
             ["type": "image", "data": "...", "mimeType": "image/png"],
             ["type": "text", "text": "second"],
         ])
         XCTAssertEqual(joined, "first\n\n[image]\n\nsecond")
-        XCTAssertEqual(ACPChatTransport.contentText(nil), "")
+        XCTAssertEqual(ACPWire.contentText(nil), "")
     }
 
     func testParseToolCallFullPayload() {
-        let call = ACPChatTransport.parseToolCall([
+        let call = ACPWire.parseToolCall([
             "toolCallId": "call-1",
             "title": "Edit main.py",
             "kind": "edit",
@@ -152,7 +152,7 @@ final class ACPParsingTests: XCTestCase {
     }
 
     func testParseToolCallDefaults() {
-        let call = ACPChatTransport.parseToolCall(["toolCallId": "call-2"])
+        let call = ACPWire.parseToolCall(["toolCallId": "call-2"])
         XCTAssertEqual(call.kind, .other, "spec default")
         XCTAssertEqual(call.status, .pending, "spec default")
         XCTAssertEqual(call.contentText, "")
@@ -160,7 +160,7 @@ final class ACPParsingTests: XCTestCase {
     }
 
     func testParseToolCallUpdateCarriesOnlyPresentFields() {
-        let update = ACPChatTransport.parseToolCallUpdate([
+        let update = ACPWire.parseToolCallUpdate([
             "toolCallId": "call-1",
             "status": "completed",
         ])
@@ -176,7 +176,7 @@ final class ACPParsingTests: XCTestCase {
 
     func testParseConfigOptionsOpenCodeShape() {
         // The shape OpenCode returns from session/new (captured live).
-        let options = ACPChatTransport.parseConfigOptions([
+        let options = ACPWire.parseConfigOptions([
             "sessionId": "s1",
             "configOptions": [
                 ["id": "model", "name": "Model", "category": "model", "type": "select",
@@ -196,7 +196,7 @@ final class ACPParsingTests: XCTestCase {
     }
 
     func testParseConfigOptionsSpecModesFallback() {
-        let options = ACPChatTransport.parseConfigOptions([
+        let options = ACPWire.parseConfigOptions([
             "sessionId": "s1",
             "modes": ["currentModeId": "ask",
                       "availableModes": [["id": "ask", "name": "Ask"], ["id": "auto", "name": "Auto"]]],
@@ -208,7 +208,7 @@ final class ACPParsingTests: XCTestCase {
     }
 
     func testParsePlanEntries() {
-        let entries = ACPChatTransport.parsePlan([
+        let entries = ACPWire.parsePlan([
             "sessionUpdate": "plan",
             "entries": [
                 ["content": "Read the file", "priority": "high", "status": "completed"],
@@ -238,7 +238,7 @@ final class ACPParsingTests: XCTestCase {
 
     func testParseCommands() {
         // The shape OpenCode emits (captured live).
-        let commands = ACPChatTransport.parseCommands([
+        let commands = ACPWire.parseCommands([
             "sessionUpdate": "available_commands_update",
             "availableCommands": [
                 ["name": "init", "description": "guided AGENTS.md setup"],
@@ -253,7 +253,7 @@ final class ACPParsingTests: XCTestCase {
 
     func testParseUsage() {
         // The shape OpenCode emits (captured live).
-        let usage = ACPChatTransport.parseUsage([
+        let usage = ACPWire.parseUsage([
             "sessionUpdate": "usage_update",
             "used": 8170, "size": 200000,
             "cost": ["amount": 0.5, "currency": "USD"],
@@ -262,7 +262,7 @@ final class ACPParsingTests: XCTestCase {
         XCTAssertEqual(usage?.size, 200000)
         XCTAssertEqual(usage?.costAmount, 0.5)
         XCTAssertEqual(usage?.costCurrency, "USD")
-        XCTAssertNil(ACPChatTransport.parseUsage(["sessionUpdate": "usage_update"]),
+        XCTAssertNil(ACPWire.parseUsage(["sessionUpdate": "usage_update"]),
                      "no usable `used` -> no event")
     }
 }

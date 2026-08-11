@@ -810,6 +810,17 @@ final class ChatStore: ObservableObject {
             isStreaming = true
             emit(.toolApprovalRequested)
 
+        case .permissionResolved(let requestID):
+            // Somebody else settled this one: a second device attached to the same remote session
+            // answered it, or the bridge default-denied it on a timeout. Drop the gate without
+            // sending an answer of our own - the answer already happened upstream. An id we never
+            // saw is normal (we may have attached after the request was issued), so this is a
+            // no-op rather than a warning.
+            pendingPermissions.removeAll { $0.id == requestID }
+
+        case .resumeCheckpoint(let sessionID, let afterSeq):
+            fireResumeCheckpoint(sessionID: sessionID, afterSeq: afterSeq)
+
         case .plan(let entries):
             if config.surfaces.plan == .hidden {
                 return
@@ -1058,6 +1069,38 @@ final class ChatStore: ObservableObject {
         }
         entrySequence = next
         emit(.entry(json: json))
+    }
+
+    /// The `{"afterSeq":N,"sessionId":"..."}` payload of a `.resumeCheckpoint` host event.
+    /// `sessionId` (lowercase d) matches the wire spelling the bridge uses, not Swift's `sessionID`.
+    private struct ResumeCheckpoint: Encodable {
+        let sessionId: String
+        let afterSeq: Int
+    }
+
+    /// Hands the host the resume cursor for the transcript it has stored so far.
+    ///
+    /// Gated on `emitsEntryEvents` deliberately: a host that is not persisting entries has no
+    /// transcript for this cursor to pair with, and a cursor stored WITHOUT its transcript is the
+    /// worse of the two failure modes - it silently skips the history before it on the next
+    /// attach. No entries out, no cursor out.
+    private func fireResumeCheckpoint(sessionID: String, afterSeq: Int) {
+        guard config.emitsEntryEvents, hostEvents != nil else {
+            // Say so once rather than dropping silently: a host that wired a checkpoint store
+            // but left emitsEntryEvents false would otherwise see cold-launch replay from zero
+            // forever with nothing to explain it.
+            logger.log("Chat: dropping a resume checkpoint; the host is not persisting entries "
+                       + "(set emitsEntryEvents to receive it)", .verbose)
+            return
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let payload = ResumeCheckpoint(sessionId: sessionID, afterSeq: afterSeq)
+        guard let jsonData = try? encoder.encode(payload), let json = String(data: jsonData, encoding: .utf8) else {
+            logger.log("Chat: could not encode resume checkpoint for session '\(sessionID)'; skipping", .warning)
+            return
+        }
+        emit(.resumeCheckpoint(json: json))
     }
 
     /// Fires the "toolCall" entry whenever a tool call is in (or reaches) a terminal (completed /

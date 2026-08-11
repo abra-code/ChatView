@@ -112,6 +112,8 @@ toolCallUpdate          { "event":"toolCallUpdate", "update":{ "id":String, plus
                           title/kind/status/contentText/diff/rawInput/rawOutput } }
 permissionRequest       { "event":"permissionRequest", "request":{ "id":String, "title":String,
                           "toolCallID":String?, "options":[{ "id":String, "name":String, "kind":String }] } }
+permissionResolved      { "event":"permissionResolved", "requestID":String }
+resumeCheckpoint        { "event":"resumeCheckpoint", "sessionID":String, "afterSeq":Int }
 plan                    { "event":"plan", "plan":[<PlanEntry>] }
 usage                   { "event":"usage", "usage":<UsageInfo> }
 error                   { "event":"error", "message":String, "recoverable":Bool }
@@ -133,6 +135,11 @@ participantsChanged     { "event":"participantsChanged", "participants":[<Partic
 historyPage             { "event":"historyPage", "items":[<ChatItem>], "hasMore":Bool }
 connectionStateChanged  { "event":"connectionStateChanged", "state":String }
 ```
+
+`permissionResolved` and `resumeCheckpoint` are Swift-only for now: the Kotlin codec in
+`android/chatview/src/test/kotlin/com/abracode/chatview/TestSupport.kt` does not decode them yet
+(they arrive with the Kotlin half of the remote-agent work). Do not use either in a SHARED fixture
+until it does, or the fixture will pass on Swift and throw on Android.
 
 The `ChatEvent` cases not represented here (`sessionReady`, `currentModeChanged`,
 `commandsAvailable`, `configOptionsChanged`) carry the session-option / slash-command vocabulary,

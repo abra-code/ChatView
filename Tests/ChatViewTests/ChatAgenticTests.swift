@@ -74,6 +74,60 @@ final class ChatRouterTests: XCTestCase {
         XCTAssertTrue(store.pendingPermissions.isEmpty, "answering must dequeue the request")
     }
 
+    func testPermissionResolvedClearsPendingGate() {
+        let store = makeStore()
+        store.route(.permissionRequest(makePermission()))
+        XCTAssertEqual(store.pendingPermissions.map(\.id), ["p1"])
+
+        // Somebody else answered it (a second device on the same remote session, or the
+        // bridge default-denying on a timeout): the gate must drop without us answering.
+        store.route(.permissionResolved(requestID: "p1"))
+        XCTAssertTrue(store.pendingPermissions.isEmpty, "an out-of-band resolution must clear the gate")
+
+        // An id we never saw is normal for a client that attached mid-flight - no-op, no crash.
+        store.route(.permissionRequest(makePermission(id: "p2")))
+        store.route(.permissionResolved(requestID: "never-seen"))
+        XCTAssertEqual(store.pendingPermissions.map(\.id), ["p2"],
+                       "an unknown request id must leave the queue untouched")
+    }
+
+    func testResumeCheckpointForwardsToHost() {
+        let logger = TestLogger()
+        var configuration = ChatConfiguration(dictionary: [:], logger: logger)
+        configuration.emitsEntryEvents = true
+        var received: [String] = []
+        let store = ChatStore(config: configuration, logger: logger, hostEvents: { event in
+            if case .resumeCheckpoint(let json) = event {
+                received.append(json)
+            }
+        })
+
+        store.route(.resumeCheckpoint(sessionID: "sess-1", afterSeq: 7))
+
+        // Sorted keys, no whitespace - the same encoder settings `.entry` uses, so a host can
+        // match on the literal shape.
+        XCTAssertEqual(received, [#"{"afterSeq":7,"sessionId":"sess-1"}"#])
+        XCTAssertTrue(store.items.isEmpty, "a checkpoint is not a transcript item")
+    }
+
+    func testResumeCheckpointSuppressedWithoutEntryPersistence() {
+        // No entries stored means no transcript for the cursor to pair with, and a cursor
+        // persisted alone silently skips the history before it on the next attach.
+        let logger = TestLogger()
+        let configuration = ChatConfiguration(dictionary: [:], logger: logger)
+        XCTAssertFalse(configuration.emitsEntryEvents, "the default host does not persist entries")
+        var received: [String] = []
+        let store = ChatStore(config: configuration, logger: logger, hostEvents: { event in
+            if case .resumeCheckpoint(let json) = event {
+                received.append(json)
+            }
+        })
+
+        store.route(.resumeCheckpoint(sessionID: "sess-1", afterSeq: 7))
+
+        XCTAssertTrue(received.isEmpty, "no entries out, no cursor out")
+    }
+
     func testTurnEndAbandonsPendingPermissions() {
         let store = makeStore()
         store.route(.permissionRequest(makePermission()))
