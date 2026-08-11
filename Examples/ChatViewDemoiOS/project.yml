@@ -1,0 +1,70 @@
+# Examples/ChatViewDemoiOS/project.yml
+#
+# The iOS demo app, generated with xcodegen:
+#
+#   cd Examples/ChatViewDemoiOS && xcodegen generate && open ChatViewDemoiOS.xcodeproj
+#
+# SwiftPM cannot produce an iOS app bundle, so an Xcode project is the only way to get this
+# onto a simulator or a device. Generating it from this file keeps a 40 KB pbxproj - which no
+# one can review in a diff - out of the repository.
+#
+# The app compiles Examples/Shared/RemoteAgentScreen.swift directly, the same file the macOS
+# demo target compiles. That is deliberate: one screen on both platforms is what makes the demo
+# evidence that the transport behaves identically, rather than two screens that agree today.
+
+name: ChatViewDemoiOS
+
+options:
+  bundleIdPrefix: com.abracode.chatview
+  deploymentTarget:
+    iOS: "17.6"
+  createIntermediateGroups: true
+
+packages:
+  ChatView:
+    path: ../..
+
+targets:
+  ChatViewDemoiOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: ../Shared
+        name: Shared
+    dependencies:
+      - package: ChatView
+        product: ChatView
+      - package: ChatView
+        product: ChatViewACP
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: ChatView Remote
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # Cleartext ws:// to a bridge on the LAN needs this exception. It is scoped to LOCAL
+        # networking only - ATS still blocks cleartext to the public internet, which is the
+        # right shape: the bridge token authorizes tool execution on the host, so off-LAN the
+        # answer is wss://, not a broader exception.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        # iOS 14+ requires this prompt before an app may talk to devices on the local network.
+        # Without it the first connection to a Mac on the LAN fails with no useful diagnostic.
+        NSLocalNetworkUsageDescription:
+          The demo connects to a chatview-acp-bridge running on your Mac.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.abracode.chatview.demo.ios
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_STYLE: Automatic
+        # Unsigned simulator builds need no team; a device build wants DEVELOPMENT_TEAM set,
+        # either here or in Xcode's signing tab.
+        CODE_SIGNING_ALLOWED: YES

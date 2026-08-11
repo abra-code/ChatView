@@ -1,0 +1,78 @@
+# Examples/ChatViewDemoMac/project.yml
+#
+# The macOS demo as a real .app bundle, generated with xcodegen:
+#
+#   cd Examples/ChatViewDemoMac && xcodegen generate && open ChatViewDemoMac.xcodeproj
+#
+# `swift run ChatViewDemo` still works and is the quickest way to poke at a screen, but a
+# SwiftPM executable is not an app bundle: it launches as a background accessory with no Dock
+# icon and no key window unless it promotes itself at runtime (see DemoAppDelegate), it has no
+# Info.plist to carry entitlements or usage strings, and it cannot be signed or sandboxed like
+# the thing a host will actually ship. This target is the honest macOS app.
+#
+# It compiles the SAME sources as the SwiftPM demo target plus Examples/Shared, so the two
+# cannot drift. `Bundle.module` does not exist here, which is why the resource lookup in
+# ChatViewDemo.swift is conditional on SWIFT_PACKAGE.
+
+name: ChatViewDemoMac
+
+options:
+  bundleIdPrefix: com.abracode.chatview
+  deploymentTarget:
+    macOS: "14.6"
+  createIntermediateGroups: true
+
+packages:
+  ChatView:
+    path: ../..
+
+targets:
+  ChatViewDemoMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: ../ChatViewDemo
+        name: ChatViewDemo
+        excludes:
+          - transcript-v2-group.json
+      - path: ../Shared
+        name: Shared
+      # Declared as a resource rather than swept up as a source, so it is copied into
+      # Contents/Resources where Bundle.main can find it.
+      - path: ../ChatViewDemo/transcript-v2-group.json
+        buildPhase: resources
+    dependencies:
+      - package: ChatView
+        product: ChatView
+      - package: ChatView
+        product: ChatViewACP
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: ChatView Demo
+        CFBundleName: ChatView Demo
+        LSApplicationCategoryType: public.app-category.developer-tools
+        NSHumanReadableCopyright: ""
+        # The Remote screen talks to a bridge over the local network. macOS 15+ prompts for
+        # local-network access the way iOS does, and without this string the prompt has nothing
+        # to show.
+        NSLocalNetworkUsageDescription:
+          The Remote screen connects to a chatview-acp-bridge on your local network.
+    entitlements:
+      path: ChatViewDemoMac.entitlements
+      properties:
+        # Sandboxed, because a demo that models a shipping app should be shaped like one - and
+        # because it proves the transport works under the sandbox a real host will run in.
+        com.apple.security.app-sandbox: true
+        # Outbound connections only. The bridge is the server; this app never listens.
+        com.apple.security.network.client: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.abracode.chatview.demo.mac
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: YES

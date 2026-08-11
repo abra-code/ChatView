@@ -8,8 +8,11 @@
 // person-to-person / group chat. Built-in transports: `local` (scripted echo / markdown /
 // agentic demo) and `local-p2p` (scripted person-to-person / group demo). Separate
 // products add `acp` (Agent Client Protocol subprocess, macOS) and `openai-sse`
-// (OpenAI-compatible /v1/chat/completions streaming). Extracted from the ActionUI
-// ActionUIChat add-on, which now wraps this package as its `Chat` element.
+// (OpenAI-compatible /v1/chat/completions streaming), plus `acp-remote` (an ACP agent hosted
+// on ANOTHER machine, reached over a WebSocket - the one agentic transport that runs on iOS,
+// since it owns no subprocess). Its server half, `chatview-acp-bridge`, is an executable in
+// this package. Extracted from the ActionUI ActionUIChat add-on, which now wraps this package
+// as its `Chat` element.
 
 import PackageDescription
 
@@ -55,9 +58,16 @@ let package = Package(
         .target(name: "ChatViewOpenAI", dependencies: ["ChatView"], path: "Sources/OpenAI"),
         // The standalone demo app (macOS). Bundles transcript-v2-group.json (copied from Fixtures)
         // as the ReadOnly screen's restored transcript.
+        // Demo screens shared by BOTH demo apps. The iOS app (Examples/ChatViewDemoiOS, an
+        // xcodegen project, since SwiftPM cannot build an iOS app bundle) compiles the same
+        // source files directly. One screen, two platforms: a screen that drifted between them
+        // would stop being evidence that the transport behaves the same on each.
+        .target(name: "ChatViewDemoShared", dependencies: ["ChatView", "ChatViewACP"],
+                path: "Examples/Shared"),
         .executableTarget(
             name: "ChatViewDemo",
-            dependencies: ["ChatView"],
+            // ChatViewACP so the demo can register `acp-remote` and drive a real bridge.
+            dependencies: ["ChatView", "ChatViewACP", "ChatViewDemoShared"],
             path: "Examples/ChatViewDemo",
             resources: [.process("transcript-v2-group.json")]
         ),
@@ -68,6 +78,11 @@ let package = Package(
         .target(name: "ACPBridgeCore", dependencies: ["ChatView", "ChatViewACP"], path: "Sources/ACPBridge"),
         .executableTarget(name: "chatview-acp-bridge", dependencies: ["ACPBridgeCore"], path: "Sources/ACPBridgeCLI"),
         .testTarget(name: "ChatViewTests", dependencies: ["ChatView"], path: "Tests/ChatViewTests"),
+        // The demo screen is the REFERENCE host implementation of the checkpoint contract, and
+        // the plan calls a non-atomic host the one failure the design cannot close in code. A
+        // reference that is only checked by eye is not a reference, so its persistence is tested.
+        .testTarget(name: "ChatViewDemoSharedTests", dependencies: ["ChatViewDemoShared", "ChatView"],
+                    path: "Tests/DemoSharedTests"),
         .testTarget(name: "ACPBridgeTests", dependencies: ["ACPBridgeCore", "ChatViewACP", "ChatView"], path: "Tests/ACPBridgeTests"),
         .testTarget(name: "ChatViewACPTests", dependencies: ["ChatViewACP", "ChatView"], path: "Tests/ACPTests"),
         .testTarget(name: "ChatViewOpenAITests", dependencies: ["ChatViewOpenAI", "ChatView"], path: "Tests/OpenAITests"),

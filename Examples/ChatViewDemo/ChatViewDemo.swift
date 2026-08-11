@@ -19,6 +19,13 @@
 import SwiftUI
 import Combine
 import ChatView
+import ChatViewACP
+// The shared demo screens are a MODULE under SwiftPM and plain sources in the Xcode app target
+// (Examples/ChatViewDemoMac compiles Examples/Shared directly), so the import only exists in
+// the package build. Same discriminator as the resource lookup at the bottom of this file.
+#if SWIFT_PACKAGE
+import ChatViewDemoShared
+#endif
 #if canImport(AppKit)
 import AppKit
 #endif
@@ -39,6 +46,9 @@ struct ChatViewDemo: App {
         // registered when its config arrives falls back to the built-in `local` transport, which waits
         // for a prompt: the symptom is a Stress screen that just sits there empty.
         registerStressTransport()
+        // Same reasoning for `acp-remote`: the Remote screen's config arrives during the first
+        // render, and an unregistered protocol silently degrades to `local`.
+        ChatViewACP.register()
     }
 
     var body: some Scene {
@@ -94,6 +104,7 @@ private enum DemoScreen: String, CaseIterable, Identifiable {
     case people = "People"
     case group = "Group"
     case agent = "Agent"
+    case remote = "Remote"
     case readOnly = "ReadOnly"
     case stress = "Stress"
 
@@ -150,6 +161,7 @@ private struct DemoRoot: View {
                 case .people:   LiveScreen(scenario: "people")
                 case .group:    LiveScreen(scenario: "group")
                 case .agent:    AgentScreen()
+                case .remote:   RemoteAgentScreen()
                 case .readOnly: ReadOnlyScreen()
                 case .stress:   StressScreen()
                 }
@@ -268,9 +280,24 @@ private struct ReadOnlyScreen: View {
     }
 }
 
+/// Where the demo's bundled resources live.
+///
+/// `Bundle.module` is synthesized by SwiftPM and does not exist in an Xcode app target, so the
+/// same sources build both ways only if the lookup is conditional. `SWIFT_PACKAGE` is defined
+/// by SwiftPM and by nothing else, which makes it the right discriminator: `swift run
+/// ChatViewDemo` reads from the package's resource bundle, and the .app built from
+/// Examples/ChatViewDemoMac reads from its own bundle, where the json is copied.
+private var demoResourceBundle: Bundle {
+#if SWIFT_PACKAGE
+    Bundle.module
+#else
+    Bundle.main
+#endif
+}
+
 /// The bundled restored transcript, parsed from the demo target's resources.
 private func loadTranscriptV2Group() -> [String: Any]? {
-    guard let url = Bundle.module.url(forResource: "transcript-v2-group", withExtension: "json"),
+    guard let url = demoResourceBundle.url(forResource: "transcript-v2-group", withExtension: "json"),
           let data = try? Data(contentsOf: url),
           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
         return nil
