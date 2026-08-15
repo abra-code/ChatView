@@ -91,7 +91,7 @@ final class ChatTranscriptScroller {
     /// back to ScrollViewProxy rather than silently not following.
     @discardableResult
     func scrollToBottom() -> Bool {
-        guard let scrollView, scrollView.documentView != nil else { return false }
+        guard let scrollView, let document = scrollView.documentView else { return false }
         let clip = scrollView.contentView
         // A non-flipped document puts the bottom at the LOW end of y, so the arithmetic below would
         // scroll to the top and report success - the follow would silently stop with no fallback.
@@ -102,9 +102,56 @@ final class ChatTranscriptScroller {
         // vs a true 620 under a 20pt bottom inset), which is the very defect this function exists to
         // avoid in `scrollTo(anchor: .bottom)`. NSClipView.scroll(to:) does NOT clamp - it will happily
         // take an out-of-range origin - so the constraining has to happen here.
+        //
+        // PROPOSE AN ORIGIN JUST PAST THE DOCUMENT'S END, NOT A SENTINEL. This asked with
+        // `y: .greatestFiniteMagnitude` until 2026-08-15, on the reasoning that any absurdly large value
+        // would clamp to the maximum. It does not: the call returns the proposed SIZE with the origin
+        // zeroed (measured: `origin=(0,0) size=(400x862)`), so `maxY` came back 0.0 on EVERY sample, the
+        // "already there" guard below saw no difference from an offset of 0, and this returned TRUE
+        // without moving anything - which also suppressed the caller's ScrollViewProxy fallback, since
+        // true means "handled". The transcript sat at the very top for a whole streaming answer while
+        // the pin trace showed a healthy pinned=true and one issued follow per delta.
+        //
+        // The rule is NOT "any finite value is safe". Measured on macOS 26.6.1 (Darwin 25.6.0) against a
+        // 1084pt document in an 862pt viewport, where the true maximum is 222:
+        //
+        //     1e6 -> 222     1e10 -> 222     1e15 -> 222     1e16 -> 222    .infinity -> 222
+        //     1e17 -> 224    1e18 -> 128     1e20 -> 0.0     1e300 -> 0.0   .greatestFiniteMagnitude -> 0.0
+        //
+        // Note the middle row: it is not a cliff to zero. Between 1e16 and 1e20 the call returns
+        // PLAUSIBLE-BUT-WRONG maxima, and 224 would sail straight through the lower-bound guard below
+        // (which only demands >= 221.5 here) and scroll 2pt past the end with no fallback. So there is
+        // no "large but safe" value to reach for; `.infinity` working is a coincidence, not a rule. The
+        // property that actually holds is "stay within a few orders of magnitude of the document", which
+        // is what proposing the document's own end does. Adding the bottom inset keeps the proposal at
+        // or past the true maximum, so constrainBoundsRect still does the clamping and still accounts
+        // for insets that `document.height - clip.height` would miss.
+        let proposedY = document.frame.maxY + scrollView.contentInsets.bottom
         let maxY = clip.constrainBoundsRect(
-            CGRect(origin: CGPoint(x: clip.bounds.origin.x, y: .greatestFiniteMagnitude),
+            CGRect(origin: CGPoint(x: clip.bounds.origin.x, y: proposedY),
                    size: clip.bounds.size)).origin.y
+        // A LOWER BOUND on the legal maximum, so an implausible answer falls back to the proxy instead
+        // of silently reporting success - the failure above was survivable as a wrong number and fatal
+        // as a silent one, and "follows 67pt short through the proxy" beats "does not follow at all".
+        //
+        // Deliberately looser than the true maximum, and in the clip's OWN coordinate space:
+        //
+        // - No content-inset term. Insets are in scroll-view points while `document.frame` and
+        //   `clip.bounds` are in the clip's magnified bounds space, so adding one mixes units (under
+        //   magnification 2 a 20pt bottom inset is worth 10 in bounds space). Dropping it only makes
+        //   this bound looser by the bottom inset, which is the right direction for a guard.
+        // - No floor at zero. A TOP inset makes the legal maximum NEGATIVE - with a 40pt top inset and
+        //   a document shorter than the viewport the entire legal range is [-40, -40] - and a floor of
+        //   0 rejects AppKit's correct answer for exactly as long as the transcript is shorter than the
+        //   viewport, i.e. the opening of every conversation. SwiftUI writes `contentInsets` from the
+        //   safe area even with `automaticallyAdjustsContentInsets` false, so any host that puts
+        //   ChatView under a toolbar or in a full-size-content window reaches this.
+        //
+        // It keeps its teeth where the bug was: on a document taller than the viewport this is the
+        // honest maximum, so the sentinel's 0.0 is refused (1084 - 862 = 222 > 0). On a document
+        // shorter than the viewport it is vacuous, which is harmless - there is nothing to scroll.
+        let expectedMaxY = document.frame.maxY - clip.bounds.height
+        guard maxY >= expectedMaxY - 0.5 else { return false }
         // Already there: report success without touching bounds, so a settled transcript does not emit
         // a pointless bounds-change (and with it a geometry sample) on every streaming delta.
         guard abs(clip.bounds.origin.y - maxY) > 0.5 else { return true }
