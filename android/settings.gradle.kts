@@ -48,4 +48,7 @@ includeBuild("../../RichText/android") { name = "richtext" }
 
 rootProject.name = "ChatView"
 include(":chatview")
+// The remote-agent transport ("acp-remote"). Its own module so the OkHttp dependency stays opt-in: a host that
+// links only :chatview never pulls it (remote-agent plan 3.4).
+include(":chatview-acp")
 include(":demo")

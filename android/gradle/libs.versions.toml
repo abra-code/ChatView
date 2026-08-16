@@ -7,6 +7,12 @@
 ## AndroidX/Compose (material-icons-extended is AndroidX and allowed) + the sibling RichText / AsyncImageCache
 ## libraries. No OkHttp, no Ktor, no markdown libs, no Coil/Glide. Test scope adds only JUnit +
 ## kotlinx-coroutines-test + the AndroidX/Compose test runner.
+##
+## That no-OkHttp rule is scoped to :chatview, the component every host links. :chatview-acp is the sanctioned
+## exception (remote-agent plan 3.4): a WebSocket transport either links a hardened client or hand-rolls RFC 6455
+## - framing, masking, fragmentation, ping/pong, close handshake, TLS - and java.net.http.HttpClient does not
+## exist on Android. OkHttp stays implementation-scoped inside that one module, so a host that never links
+## :chatview-acp never pulls it, exactly like a Swift host that never links ChatViewACP.
 
 [versions]
 agp = "9.3.1"
@@ -17,6 +23,9 @@ androidxCore = "1.18.0"
 composeBom = "2026.02.01"
 activityCompose = "1.10.1"
 lifecycle = "2.7.0"
+# :chatview-acp only (the WebSocket transport module; see the header). mockwebserver3 ships in the same release
+# train as okhttp, so the two stay on one version.
+okhttp = "5.1.0"
 # Test scope only (never ships).
 junit = "4.13.2"
 androidxTestExtJunit = "1.1.5"
@@ -30,6 +39,9 @@ kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "androidxCore" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
+
+# The WebSocket client for :chatview-acp (implementation-scoped there; never seen by :chatview).
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 
 # Sibling standalone libraries, resolved to their local composite builds (see settings.gradle.kts). Same
 # coordinates the Swift package depends on. Referenced by string coordinate in :chatview (the includeBuild
@@ -48,6 +60,7 @@ androidx-compose-material-icons-extended = { group = "androidx.compose.material"
 
 # Test.
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+mockwebserver3 = { group = "com.squareup.okhttp3", name = "mockwebserver3", version.ref = "okhttp" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestExtJunit" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
