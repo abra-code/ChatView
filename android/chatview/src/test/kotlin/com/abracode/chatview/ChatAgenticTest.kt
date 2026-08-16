@@ -12,6 +12,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -70,6 +71,82 @@ class ChatAgenticTest {
         assertTrue("an in-flight permission means the turn is in flight", store.isStreaming)
         store.respondToPermission("p1", "allow-once")
         assertTrue("answering must dequeue the request", store.pendingPermissions.isEmpty())
+    }
+
+    @Test
+    fun router_permissionResolvedClearsPendingGate() {
+        val store = makeStore()
+        store.route(ChatEvent.PermissionRequestEvent(makePermission()))
+        assertEquals(listOf("p1"), store.pendingPermissions.map { it.id })
+
+        // Somebody else answered it (a second device on the same remote session, or the bridge default-denying on a
+        // timeout): the gate must drop without us answering.
+        store.route(ChatEvent.PermissionResolved("p1"))
+        assertTrue("an out-of-band resolution must clear the gate", store.pendingPermissions.isEmpty())
+
+        // An id we never saw is normal for a client that attached mid-flight - no-op, no crash.
+        store.route(ChatEvent.PermissionRequestEvent(makePermission(id = "p2")))
+        store.route(ChatEvent.PermissionResolved("never-seen"))
+        assertEquals(
+            "an unknown request id must leave the queue untouched",
+            listOf("p2"),
+            store.pendingPermissions.map { it.id },
+        )
+    }
+
+    @Test
+    fun router_sessionInfoPublishesAndClears() {
+        val store = makeStore()
+        store.route(
+            ChatEvent.SessionInfo(
+                AgentSessionInfo(
+                    sessionId = "ses-42", agentName = "FakeAgent", agentVersion = "9.9", protocolVersion = 1,
+                    agentPid = 4242, canLoadSession = true, canPrime = false, resumed = false,
+                ),
+            ),
+        )
+        assertEquals("the store publishes the live session identity", "ses-42", store.sessionInfo?.sessionId)
+        assertEquals("FakeAgent", store.sessionInfo?.agentName)
+        assertTrue("session identity must not append a transcript item", store.items.isEmpty())
+
+        store.teardown()
+        assertNull("a stopped agent's session id and pid name nothing after teardown", store.sessionInfo)
+    }
+
+    @Test
+    fun router_resumeCheckpointForwardsToHost() {
+        val logger = noopLogger()
+        val config = ChatConfiguration.fromJson(buildJsonObject {}, logger)
+        config.emitsEntryEvents = true
+        val received = mutableListOf<String>()
+        val store = ChatStore(
+            config = config, logger = logger, scheduler = ManualChatScheduler(), scope = inertScope(),
+            hostEvents = { event -> if (event is ChatHostEvent.ResumeCheckpoint) received.add(event.json) },
+        )
+
+        store.route(ChatEvent.ResumeCheckpoint(sessionID = "sess-1", afterSeq = 7))
+
+        // Sorted keys, no whitespace - the same encoding `Entry` uses, so a host can match on the literal shape.
+        assertEquals(listOf("""{"afterSeq":7,"sessionId":"sess-1"}"""), received)
+        assertTrue("a checkpoint is not a transcript item", store.items.isEmpty())
+    }
+
+    @Test
+    fun router_resumeCheckpointSuppressedWithoutEntryPersistence() {
+        // No entries stored means no transcript for the cursor to pair with, and a cursor persisted alone silently
+        // skips the history before it on the next attach.
+        val logger = noopLogger()
+        val config = ChatConfiguration.fromJson(buildJsonObject {}, logger)
+        assertFalse("the default host does not persist entries", config.emitsEntryEvents)
+        val received = mutableListOf<String>()
+        val store = ChatStore(
+            config = config, logger = logger, scheduler = ManualChatScheduler(), scope = inertScope(),
+            hostEvents = { event -> if (event is ChatHostEvent.ResumeCheckpoint) received.add(event.json) },
+        )
+
+        store.route(ChatEvent.ResumeCheckpoint(sessionID = "sess-1", afterSeq = 7))
+
+        assertTrue("no entries out, no cursor out", received.isEmpty())
     }
 
     @Test

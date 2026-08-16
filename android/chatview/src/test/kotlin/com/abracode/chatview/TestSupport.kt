@@ -22,6 +22,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -232,6 +233,8 @@ object FixtureEventCodec {
                     ),
                 )
             }
+            "permissionResolved" -> ChatEvent.PermissionResolved(str("requestID"))
+            "resumeCheckpoint" -> ChatEvent.ResumeCheckpoint(str("sessionID"), obj.getValue("afterSeq").jsonPrimitive.int)
             "permissionRequest" -> {
                 val r = obj.getValue("request").jsonObject
                 val options = r.getValue("options").jsonArray.map {

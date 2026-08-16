@@ -136,11 +136,6 @@ historyPage             { "event":"historyPage", "items":[<ChatItem>], "hasMore"
 connectionStateChanged  { "event":"connectionStateChanged", "state":String }
 ```
 
-`permissionResolved` and `resumeCheckpoint` are Swift-only for now: the Kotlin codec in
-`android/chatview/src/test/kotlin/com/abracode/chatview/TestSupport.kt` does not decode them yet
-(they arrive with the Kotlin half of the remote-agent work). Do not use either in a SHARED fixture
-until it does, or the fixture will pass on Swift and throw on Android.
-
 The `ChatEvent` cases not represented here (`sessionReady`, `currentModeChanged`,
 `commandsAvailable`, `configOptionsChanged`) carry the session-option / slash-command vocabulary,
 whose store effects are transient (not in the transcript) and are covered by the ported store unit

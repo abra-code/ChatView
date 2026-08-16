@@ -297,6 +297,25 @@ data class SessionConfigOption(
         get() = options.firstOrNull { it.value == currentValue }?.name
 }
 
+/**
+ * Identity and capabilities of the live agent session, emitted once the session is established (ACP: after
+ * initialize + session/new or session/load). Additive to the frozen transport contract: transports that do not emit
+ * it are unaffected. Serializable so the store can hand it to a persisting host through the entry channel; the three
+ * booleans are @EncodeDefault(ALWAYS) because Swift's Codable always writes them.
+ */
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class AgentSessionInfo(
+    val sessionId: String,
+    val agentName: String? = null,          // initialize agentInfo.name
+    val agentVersion: String? = null,       // initialize agentInfo.version
+    val protocolVersion: Int? = null,
+    val agentPid: Int? = null,              // the spawned subprocess, for host-side lifecycle registries
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) val canLoadSession: Boolean = false,   // agentCapabilities.loadSession
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) val canPrime: Boolean = false,         // agentCapabilities.sessionPrime (mlx-agent extension)
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) val resumed: Boolean = false,          // true when this session came from session/load
+)
+
 /** A slash command the agent currently offers (ACP `available_commands_update`). Sent as ordinary prompt text. */
 data class SlashCommand(
     val name: String,
@@ -625,6 +644,7 @@ enum class ChatConnectionState {
  */
 sealed interface ChatEvent {
     data class SessionReady(val sessionID: String, val configOptions: List<SessionConfigOption>) : ChatEvent
+    data class SessionInfo(val info: AgentSessionInfo) : ChatEvent   // agent identity + capabilities, once per established session
     data class MessageStart(val itemID: String, val role: ChatRole) : ChatEvent
     data class MessageDelta(val itemID: String, val text: String) : ChatEvent
     data class MessageEnd(val itemID: String, val stopReason: String?) : ChatEvent
@@ -632,6 +652,13 @@ sealed interface ChatEvent {
     data class ToolCall(val call: ToolCallModel) : ChatEvent
     data class ToolCallUpdateEvent(val update: ToolCallUpdate) : ChatEvent
     data class PermissionRequestEvent(val request: PermissionRequest) : ChatEvent
+
+    /**
+     * An out-of-band resolution of a pending permission request: another device answered it, or a remote bridge timed
+     * it out. The store clears the matching gate; an unknown id is a no-op, never an error - a reattaching client can
+     * legitimately hear about a resolution for a request it never saw.
+     */
+    data class PermissionResolved(val requestID: String) : ChatEvent
     data class Plan(val entries: List<PlanEntry>) : ChatEvent
     data class Usage(val usage: UsageInfo) : ChatEvent
     data class CurrentModeChanged(val modeID: String) : ChatEvent
@@ -640,6 +667,18 @@ sealed interface ChatEvent {
     data class Image(val itemID: String, val role: ChatRole, val image: ChatImage) : ChatEvent
     data class System(val text: String) : ChatEvent
     data class Error(val message: String, val recoverable: Boolean) : ChatEvent
+
+    /**
+     * A resumable transport reporting how far the host's persisted transcript now reaches. The store forwards it as
+     * one [ChatHostEvent.ResumeCheckpoint]; it is not a transcript item and never appears in `items`. Emitted only at
+     * turn boundaries, where the transcript is quiescent, so that "what the host has stored" and "this cursor"
+     * describe the same instant; see the acp-remote plan's section 4.2a.
+     *
+     * REQUIRES [ChatConfiguration.emitsEntryEvents]. A cursor is only meaningful next to the transcript it was minted
+     * against, and [ChatHostEvent.Entry] is how that transcript reaches the host, so a store that is not emitting
+     * entries drops checkpoints instead of handing out a cursor with nothing to pair it with.
+     */
+    data class ResumeCheckpoint(val sessionID: String, val afterSeq: Int) : ChatEvent
 
     // --- P2P (v2) additive vocabulary. All are transport -> store.
     data class MessageReceived(val message: ChatMessage) : ChatEvent

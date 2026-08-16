@@ -149,6 +149,35 @@ class ChatTranscriptTest {
     }
 
     @Test
+    fun seam_testSessionEntryEnvelopeFires() {
+        // Session identity is not a transcript item: it reaches a persisting host only through the entry channel
+        // (type "session"), and it publishes on the store for the status surfaces. One event, one envelope.
+        val sink = EntrySink()
+        val store = makeStore(entrySink = sink)
+        store.route(
+            ChatEvent.SessionInfo(
+                AgentSessionInfo(
+                    sessionId = "ses-42", agentName = "FakeAgent", agentVersion = "9.9", protocolVersion = 1,
+                    agentPid = 4242, canLoadSession = true, canPrime = false, resumed = false,
+                ),
+            ),
+        )
+
+        assertEquals("the store publishes the live session identity", "ses-42", store.sessionInfo?.sessionId)
+        assertEquals("FakeAgent", store.sessionInfo?.agentName)
+        assertEquals("session identity must not append a transcript item", 0, store.items.size)
+
+        val envelopes = sink.envelopes()
+        assertEquals("exactly one session envelope fires", listOf("session"), envelopes.map { it.type })
+        assertEquals("ses-42", envelopes.first().id)
+        val json = sink.rawJSONs().first()
+        assertTrue("the envelope names the entry type: $json", json.contains("\"type\":\"session\""))
+        assertTrue("the payload carries the agent's session id: $json", json.contains("\"sessionId\":\"ses-42\""))
+        assertTrue("the payload carries the agent pid for host lifecycle registries: $json", json.contains("\"agentPid\":4242"))
+        assertTrue("Swift's Codable always writes the capability booleans: $json", json.contains("\"canPrime\":false"))
+    }
+
+    @Test
     fun seam_testNoEntryActionMeansNoFiring() {
         // Without entry events enabled (no sink), driving a turn must not crash / fire anything.
         val store = makeStore()

@@ -148,6 +148,23 @@ class ChatConfigInjectionTest {
         store.teardown()
     }
 
+    @Test
+    fun testReconfigureClearsTheOldSessionIdentity() {
+        // A new transport fronts a NEW agent session, so the old identity (a session id and a pid that both name
+        // nothing now) must not linger until the new transport reports its own.
+        val name = "inject-test-session-identity-" + java.util.UUID.randomUUID()
+        ChatTransportRegistry.shared.register(name) { _, _ -> FakeInjectTransport() }
+        val source = FakeContentSource(initialConfig = mapOf("protocol" to name, "transport" to mapOf("model" to "A")))
+        val store = makeStore(source = source)
+        store.start()
+        store.route(ChatEvent.SessionInfo(AgentSessionInfo(sessionId = "ses-1", agentPid = 111)))
+        assertEquals("ses-1", store.sessionInfo?.sessionId)
+
+        source.config = mapOf("protocol" to name, "transport" to mapOf("model" to "B"))
+        assertNull("the re-configured transport starts with no session identity", store.sessionInfo)
+        store.teardown()
+    }
+
     // MARK: - Restore primes the transport wire history (P0-2 continue-in)
 
     private fun registerPrimingTransport(box: TransportBox): String {

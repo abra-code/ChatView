@@ -92,6 +92,7 @@ internal class ChatStore(
     var plan by mutableStateOf<List<PlanEntry>>(emptyList()); private set         // the agent's current plan (whole-list replace)
     var usage by mutableStateOf<UsageInfo?>(null); private set                    // latest token/cost status, when reported
     var configOptions by mutableStateOf<List<SessionConfigOption>>(emptyList()); private set   // model/mode/... advertised at session start
+    var sessionInfo by mutableStateOf<AgentSessionInfo?>(null); private set      // identity/capabilities of the live agent session (null until one is established)
     var availableCommands by mutableStateOf<List<SlashCommand>>(emptyList()); private set      // the agent's slash commands (composer menu)
     var contextState by mutableStateOf(ChatContextState.SYNCED); private set      // does the agent context match the display
     var draft by mutableStateOf("")
@@ -292,6 +293,9 @@ internal class ChatStore(
         // is a new event stream (a stale supersession flag must not swallow a real turn end).
         wireContext = emptyList()
         supersededTurnPending = false
+        // A new transport is a new agent session: the old one's identity must not linger (it names a pid and a
+        // session id that are both gone) until the new one reports.
+        sessionInfo = null
         // Seed the new transport's wire history from any already-restored items (applying the last prime directive).
         primeTransportFromItems()
         eventJob = scope.launch {
@@ -573,6 +577,7 @@ internal class ChatStore(
         isStreaming = false
         awaitingReply = false
         connectionState = ChatConnectionState.CONNECTING   // reset for cleanliness; the composer is gated by isConfigured while torn down
+        sessionInfo = null                                 // the agent is being stopped; its session id and pid name nothing after this
         val transport = this.transport
         this.transport = null
         scope.launch { transport?.stop() }
@@ -586,6 +591,13 @@ internal class ChatStore(
             is ChatEvent.SessionReady -> {
                 configOptions = event.configOptions
                 logger.log("Chat session ready: ${event.sessionID}", ChatLogLevel.VERBOSE)
+            }
+
+            is ChatEvent.SessionInfo -> {
+                sessionInfo = event.info
+                fireEntry("session", event.info.sessionId) {
+                    chatJson.encodeToJsonElement(AgentSessionInfo.serializer(), event.info)
+                }
             }
 
             is ChatEvent.MessageStart -> {
@@ -691,6 +703,18 @@ internal class ChatStore(
                 _pendingPermissions.add(event.request)
                 isStreaming = true
                 emit(ChatHostEvent.ToolApprovalRequested)
+            }
+
+            is ChatEvent.PermissionResolved -> {
+                // Somebody else settled this one: a second device attached to the same remote session answered it, or
+                // the bridge default-denied it on a timeout. Drop the gate without sending an answer of our own - the
+                // answer already happened upstream. An id we never saw is normal (we may have attached after the
+                // request was issued), so this is a no-op rather than a warning.
+                _pendingPermissions.removeAll { it.id == event.requestID }
+            }
+
+            is ChatEvent.ResumeCheckpoint -> {
+                fireResumeCheckpoint(event.sessionID, event.afterSeq)
             }
 
             is ChatEvent.Plan -> {
@@ -941,6 +965,42 @@ internal class ChatStore(
         }
         entrySequence = next
         emit(ChatHostEvent.Entry(json))
+    }
+
+    /**
+     * Hands the host the resume cursor for the transcript it has stored so far, as `{"afterSeq":N,"sessionId":"..."}`
+     * (`sessionId` with a lowercase d matches the wire spelling the bridge uses, not Kotlin's `sessionID`).
+     *
+     * Gated on emitsEntryEvents deliberately: a host that is not persisting entries has no transcript for this cursor
+     * to pair with, and a cursor stored WITHOUT its transcript is the worse of the two failure modes - it silently
+     * skips the history before it on the next attach. No entries out, no cursor out.
+     */
+    private fun fireResumeCheckpoint(sessionID: String, afterSeq: Int) {
+        if (!config.emitsEntryEvents || hostEvents == null) {
+            // Say so once rather than dropping silently: a host that wired a checkpoint store but left
+            // emitsEntryEvents false would otherwise see cold-launch replay from zero forever with nothing to
+            // explain it.
+            logger.log(
+                "Chat: dropping a resume checkpoint; the host is not persisting entries "
+                    + "(set emitsEntryEvents to receive it)",
+                ChatLogLevel.VERBOSE,
+            )
+            return
+        }
+        val json = runCatching {
+            canonicalEntryJson(
+                sortJsonElement(
+                    buildJsonObject {
+                        put("sessionId", sessionID)
+                        put("afterSeq", afterSeq)
+                    },
+                ),
+            )
+        }.getOrElse {
+            logger.log("Chat: could not encode resume checkpoint for session '$sessionID'; skipping", ChatLogLevel.WARNING)
+            return
+        }
+        emit(ChatHostEvent.ResumeCheckpoint(json))
     }
 
     /** Fires the "toolCall" entry whenever a tool call is in (or reaches) a terminal state; re-fires on later updates. */
