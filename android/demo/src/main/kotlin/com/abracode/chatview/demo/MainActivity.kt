@@ -32,6 +32,7 @@ import com.abracode.chatview.Cancellable
 import com.abracode.chatview.ChatConfiguration
 import com.abracode.chatview.ChatContentSource
 import com.abracode.chatview.ConsoleChatLogger
+import com.abracode.chatview.acp.ChatViewAcpRemote
 import com.abracode.chatview.ui.ChatView
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -42,11 +43,16 @@ import kotlinx.serialization.json.putJsonObject
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Transports register at launch, before any chat view is built. `local-p2p` is built in; `acp-remote` is a
+        // separate module, so linking it and calling this is what makes the Agent screen's protocol resolvable.
+        ChatViewAcpRemote.register()
         setContent { MaterialTheme { Surface(Modifier.fillMaxSize()) { DemoRoot() } } }
     }
 }
 
-private enum class DemoScreen(val label: String) { PEOPLE("People"), GROUP("Group"), READ_ONLY("ReadOnly") }
+private enum class DemoScreen(val label: String) {
+    PEOPLE("People"), GROUP("Group"), READ_ONLY("ReadOnly"), AGENT("Agent"),
+}
 
 /** A ChatContentSource that hands the store one fixed operational config on subscription (the host-injection seam). */
 private class FixedConfigSource(private val config: JsonObject) : ChatContentSource {
@@ -83,6 +89,7 @@ private fun DemoRoot() {
                 DemoScreen.PEOPLE -> LiveScreen(scenario = "people")
                 DemoScreen.GROUP -> LiveScreen(scenario = "group")
                 DemoScreen.READ_ONLY -> ReadOnlyScreen()
+                DemoScreen.AGENT -> RemoteAgentScreen()
             }
         }
     }

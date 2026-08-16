@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -46,6 +47,9 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -58,15 +62,24 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -75,6 +88,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.abracode.asyncimagecache.CachedImage
 import com.abracode.asyncimagecache.ContentMode
+import com.abracode.chatview.ChatConfiguration
 import com.abracode.chatview.ChatFile
 import com.abracode.chatview.ChatItem
 import com.abracode.chatview.ChatMessage
@@ -83,6 +97,7 @@ import com.abracode.chatview.FileTransferStatus
 import com.abracode.chatview.MessageStatus
 import com.abracode.chatview.Reaction
 import com.abracode.chatview.ReplyRef
+import com.abracode.chatview.ToolCallModel
 import com.abracode.richtext.rendering.RichText
 import java.time.Instant
 
@@ -117,8 +132,15 @@ internal fun DualTranscriptRow(ctx: DualRowContext, actions: DualRowActions, hig
             }
             is ChatItem.System -> CenteredCaption(item.text, null, MaterialTheme.colorScheme.onSurfaceVariant)
             is ChatItem.Error -> CenteredCaption(item.text, Icons.Filled.Warning, MaterialTheme.colorScheme.error)
-            is ChatItem.Thought -> ThoughtPlaceholderRow(item.thought.isStreaming)
-            is ChatItem.ToolCall -> ToolCallPlaceholderRow(item)
+            is ChatItem.Thought -> ThoughtRow(
+                thought = item.thought,
+                initiallyExpanded = actions.config.surfaces.thoughts != ChatConfiguration.SurfaceMode.COLLAPSED,
+            )
+            is ChatItem.ToolCall -> ToolCallRow(
+                call = item.call,
+                compact = actions.config.surfaces.toolCalls == ChatConfiguration.SurfaceMode.COLLAPSED,
+                showsDiff = actions.config.surfaces.diffs != ChatConfiguration.SurfaceMode.HIDDEN,
+            )
         }
     }
 }
@@ -618,43 +640,247 @@ private fun DaySeparatorRow(timestamp: Instant) {
     }
 }
 
-// --- Tier-2 placeholders (thought / tool call). ---------------------------------------------------------------
+// --- Agentic rows (thought fold / tool call card). -------------------------------------------------------------
+//
+// Ports of ThoughtRow (ChatView.swift:1046) and ToolCallRow (ChatView.swift:1354), replacing the Tier-2
+// placeholders the porting plan left here. These are what make an agent session readable on a phone: without the
+// fold a reasoning stream is a wall of text, and without the card a tool call is a title with no way to see what
+// it actually did.
+
+/** The reasoning fold. Collapsed by default unless the document asks for inline thoughts. */
+@Composable
+private fun ThoughtRow(thought: ChatMessage, initiallyExpanded: Boolean) {
+    // rememberSaveable, not remember: a LazyColumn disposes rows outside its window, so a plain remember loses the
+    // fold as soon as the reader scrolls past it - and loses every open fold on rotation. Keyed on the item id so a
+    // recycled row never inherits another item's state.
+    var expanded by rememberSaveable(thought.id) { mutableStateOf(initiallyExpanded) }
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(6.dp))
+                .clickable { expanded = !expanded }
+                .padding(vertical = 2.dp)
+                .semantics {
+                    role = Role.Button
+                    stateDescription = if (expanded) "Expanded" else "Collapsed"
+                }
+                .testTag("chat.thought.header"),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Psychology,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(
+                if (thought.isStreaming) "Thinking..." else "Thoughts",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            DisclosureChevron(expanded)
+        }
+        if (expanded) {
+            Box(modifier = Modifier.alpha(0.75f).padding(start = 24.dp).testTag("chat.thought.body")) {
+                if (thought.text.isEmpty() && thought.isStreaming) {
+                    Text("...", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    RichText(markdown = thought.text)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One tool invocation: kind icon, title, status, and - when the call carries content, a diff, or raw input /
+ * output - a fold with the detail. The card mutates in place as tool_call_update events arrive (same item id).
+ *
+ * The detail ALWAYS starts folded, whatever surfaces.toolCalls says: tool content is bulk material (a whole file
+ * read, a long command output) and auto-expanding it floods the transcript. `compact` (surfaces.toolCalls =
+ * "collapsed") additionally shrinks the card to a caption row.
+ */
+@Composable
+private fun ToolCallRow(call: ToolCallModel, compact: Boolean, showsDiff: Boolean) {
+    // rememberSaveable for the same reason as the thought fold: scrolling past an expanded card and back must not
+    // re-collapse the output the reader was in the middle of.
+    var expanded by rememberSaveable(call.id) { mutableStateOf(false) }
+    val hasDetail = call.contentText.isNotEmpty() || (showsDiff && call.diff != null) ||
+        call.rawInput != null || call.rawOutput != null
+
+    val body: @Composable () -> Unit = {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(
+                        if (hasDetail) {
+                            Modifier
+                                .clickable { expanded = !expanded }
+                                .semantics {
+                                    role = Role.Button
+                                    stateDescription = if (expanded) "Expanded" else "Collapsed"
+                                }
+                        } else {
+                            Modifier
+                        },
+                    )
+                    .testTag("chat.toolCall.header"),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    ChatIcons.forToolKind(call.kind),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    call.title,
+                    style = if (compact) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
+                    color = if (compact) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                    maxLines = if (compact) 1 else 2,
+                    overflow = TextOverflow.Ellipsis,
+                    // The one weighted child, so a long title ellipsizes instead of squeezing the status out of
+                    // the row, and the status pins to the trailing edge (Swift's Spacer(minLength: 8)).
+                    modifier = Modifier.weight(1f),
+                )
+                if (hasDetail) {
+                    DisclosureChevron(expanded)
+                }
+                ToolStatusIndicator(call.status)
+            }
+            if (expanded && hasDetail) {
+                ToolCallDetail(call, showsDiff)
+            }
+        }
+    }
+
+    if (compact) {
+        Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)) { body() }
+    } else {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.08f))
+                .border(1.dp, MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f), RoundedCornerShape(10.dp))
+                .padding(10.dp),
+        ) {
+            body()
+        }
+    }
+}
 
 @Composable
-private fun ThoughtPlaceholderRow(isStreaming: Boolean) {
-    Row(
-        modifier = Modifier.padding(horizontal = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
+private fun ToolCallDetail(call: ToolCallModel, showsDiff: Boolean) {
+    Column(
+        modifier = Modifier.fillMaxWidth().testTag("chat.toolCall.detail"),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Icon(Icons.Filled.Psychology, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+        if (call.contentText.isNotEmpty()) {
+            RichText(markdown = cappedToolDetail(call.contentText))
+        }
+        val diff = call.diff
+        if (showsDiff && diff != null) {
+            // No DiffView on Android (it is not ported, and the remote-agent plan says not to build one here), so a
+            // diff renders as its resulting text under the path - readable, and honest about what it is.
+            Text(
+                diff.path,
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            CodeBlock(cappedToolDetail(diff.newText))
+        }
+        call.rawInput?.let { LabeledCode("Input", cappedToolDetail(it)) }
+        call.rawOutput?.let { LabeledCode("Output", cappedToolDetail(it)) }
+    }
+}
+
+@Composable
+private fun LabeledCode(title: String, text: String) {
+    Text(
+        title,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    CodeBlock(text)
+}
+
+@Composable
+private fun CodeBlock(text: String) {
+    // Selectable: tool output the reader cannot copy off a phone is materially less useful, and the Swift twin
+    // enables text selection on the same block.
+    SelectionContainer {
         Text(
-            if (isStreaming) "Thinking..." else "Thoughts",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            text,
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(6.dp))
+                .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.08f))
+                .padding(6.dp),
         )
     }
 }
 
 @Composable
-private fun ToolCallPlaceholderRow(item: ChatItem.ToolCall) {
-    val call = item.call
-    Row(
-        modifier = Modifier.padding(horizontal = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(ChatIcons.forToolKind(call.kind), contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
-        Text(
-            call.title,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false),
+private fun DisclosureChevron(expanded: Boolean) {
+    val rotation by animateFloatAsState(if (expanded) 90f else 0f, label = "disclosure")
+    Icon(
+        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.size(16.dp).rotate(rotation),
+    )
+}
+
+@Composable
+private fun ToolStatusIndicator(status: ToolCallModel.Status) {
+    when (status) {
+        ToolCallModel.Status.IN_PROGRESS ->
+            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+        ToolCallModel.Status.COMPLETED -> Icon(
+            ChatIcons.forToolStatus(status),
+            contentDescription = "Completed",
+            tint = Color(0xFF16A34A),
+            modifier = Modifier.size(16.dp),
         )
-        Icon(ChatIcons.forToolStatus(call.status), contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
+        ToolCallModel.Status.FAILED -> Icon(
+            ChatIcons.forToolStatus(status),
+            contentDescription = "Failed",
+            tint = MaterialTheme.colorScheme.error,
+            modifier = Modifier.size(16.dp),
+        )
+        ToolCallModel.Status.PENDING -> Icon(
+            ChatIcons.forToolStatus(status),
+            contentDescription = "Pending",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(16.dp),
+        )
     }
+}
+
+/** Port of ToolDetailText.capped: a megabyte of tool output stays a card, not a scroll marathon. */
+private const val toolDetailCap = 4000
+
+private fun cappedToolDetail(text: String): String {
+    if (text.length <= toolDetailCap) {
+        return text
+    }
+    // Back off one unit rather than splitting a surrogate pair, which would render as a replacement glyph. The
+    // Swift twin counts grapheme clusters and cannot hit this at all.
+    val end = if (text[toolDetailCap - 1].isHighSurrogate()) toolDetailCap - 1 else toolDetailCap
+    return text.take(end) + "\n... (truncated, ${text.length - end} more characters)"
 }
 
 // --- Avatar. --------------------------------------------------------------------------------------------------

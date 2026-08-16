@@ -298,8 +298,26 @@ final class URLSessionSocketFactory: ACPRemoteSocketFactory {
     }
 }
 
+/// Refuses to follow a redirect on the upgrade.
+///
+/// A 3xx that moves the endpoint would carry the client to a host the transport's scheme policy
+/// never approved - and the bridge token travels in the `initialize` params, which no
+/// header-stripping rule protects, so a redirected socket hands a code-execution credential to
+/// wherever the redirect points, in cleartext if it says `ws://`. A WebSocket upgrade has no
+/// legitimate reason to be redirected; the config names the bridge.
+private final class NoRedirectSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(_ session: URLSession,
+                    task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+
 private final class URLSessionSocket: NSObject, ACPRemoteSocket, @unchecked Sendable {
 
+    private let session: URLSession
     private let task: URLSessionWebSocketTask
     private let delegate: any ACPRemoteSocketDelegate
     private let lock = NSLock()
@@ -311,7 +329,13 @@ private final class URLSessionSocket: NSObject, ACPRemoteSocket, @unchecked Send
         for (name, value) in headers {
             request.setValue(value, forHTTPHeaderField: name)
         }
-        self.task = URLSession.shared.webSocketTask(with: request)
+        // A private session rather than URLSession.shared, purely so the redirect policy above can
+        // be installed: a shared session takes no delegate. Invalidated in finish(), which is what
+        // releases the delegate the session retains.
+        self.session = URLSession(configuration: .default,
+                                  delegate: NoRedirectSessionDelegate(),
+                                  delegateQueue: nil)
+        self.task = session.webSocketTask(with: request)
         self.delegate = delegate
         super.init()
     }
@@ -393,6 +417,9 @@ private final class URLSessionSocket: NSObject, ACPRemoteSocket, @unchecked Send
             return
         }
         task.cancel(with: .goingAway, reason: nil)
+        // Releases the session's strong reference to its delegate. A connection object is
+        // single-use, so its session is too.
+        session.finishTasksAndInvalidate()
         delegate.socketDidClose(error: error)
     }
 }

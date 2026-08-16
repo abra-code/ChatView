@@ -66,6 +66,12 @@ private val ELLIPSIS = String(Character.toChars(0x2026))
  * follows / pins the scroll like a messaging app, and (unless readOnly) hosts the composer below - input, attach,
  * and a Send button that swaps to Stop while a turn is in flight, with reply / edit banners driven by the row menu.
  */
+// The store is `remember`ed with NO keys, deliberately: it owns the transport, the transcript, and the host-event
+// sink for the element's whole lifetime, and re-creating it on an argument change would drop a live session. The
+// consequence for a HOST is that a changed `configuration` / `contentSource` / `hostEvents` is ignored once the
+// view is composed - to swap any of them, rebuild the view under `key(...)` (as the demo's Agent screen does with
+// its generation counter), or inject the change through the content source's config channel, which is the seam
+// built for exactly this.
 @Composable
 fun ChatView(
     configuration: ChatConfiguration,
@@ -349,6 +355,15 @@ fun ChatView(
                 )
             }
         }
+      }
+
+      // The agent's blocking question sits between the transcript and the composer (ChatView.swift:90), whose
+      // input pauses while it is up. Shown even in readOnly: a restored transcript never carries one, and a live
+      // session that asks must be answerable - an unanswered request stalls the agent, not just this view.
+      store.pendingPermissions.firstOrNull()?.let { request ->
+          PermissionCard(request = request) { optionID ->
+              store.respondToPermission(request.id, optionID)
+          }
       }
 
       // readOnly is the history-viewer mode: no composer (ChatView.swift:82). Otherwise the composer sits below the

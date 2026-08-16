@@ -522,8 +522,18 @@ final class ACPRemoteTransport: ChatTransport, @unchecked Sendable {
                     return
                 }
                 await self.connectOnce(isReconnect: true)
-                if self.lock.withLock({ self.connection != nil }) {
-                    self.lock.withLock { self.reconnectTask = nil }
+                // ONE acquisition for the check and the retirement. Split in two, a socket that
+                // drops in the gap sees this task still latched, declines to schedule a new loop,
+                // and is then followed by the clear below - leaving the transport reconnecting
+                // forever with nothing running to reconnect it.
+                let settled: Bool = self.lock.withLock {
+                    if self.connection != nil {
+                        self.reconnectTask = nil
+                        return true
+                    }
+                    return false
+                }
+                if settled {
                     return
                 }
                 attempt += 1

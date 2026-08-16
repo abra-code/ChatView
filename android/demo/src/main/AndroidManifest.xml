@@ -4,8 +4,24 @@
     <!-- Remote avatars / image items in demo conversations load through AsyncImageCache. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!--
+      The Agent screen talks to a chatview-acp-bridge over ws:// on a local network, and Android has blocked
+      cleartext by default since API 28 - this is the Android twin of the iOS demo's NSAllowsLocalNetworking. It is
+      set app-wide because the addresses that matter (the emulator's 10.0.2.2, a Mac's LAN address, a .local name)
+      cannot all be enumerated in a network-security-config, and because the real control lives a layer down: the
+      acp-remote transport itself refuses ws:// to anything that is not loopback, .local, RFC 1918, link-local, or
+      CGNAT unless the host opts in with allowInsecure. A shipping app should not need this - off a network you
+      control, put the bridge behind a VPN or a TLS proxy and use wss://.
+    -->
+    <!--
+      allowBackup is OFF because the Agent screen keeps a bridge token in plain SharedPreferences (a demo
+      shortcut, flagged as such in RemoteAgentScreen.kt). Auto Backup would copy that token off the device into
+      the user's cloud backup and into `adb backup`, which turns a local demo shortcut into an exfiltration path
+      for a credential that authorizes tool execution on the bridge host.
+    -->
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:usesCleartextTraffic="true"
         android:label="ChatView Demo"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">

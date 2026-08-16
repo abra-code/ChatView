@@ -46,6 +46,9 @@ kotlin {
 
 dependencies {
     implementation(project(":chatview"))
+    // The Agent screen's transport. Opt-in by design: this is the only module that pulls OkHttp, and a host that
+    // does not drive a remote agent never links it (remote-agent plan 3.4).
+    implementation(project(":chatview-acp"))
 
     // The demo builds the operational config / restored transcript as kotlinx JSON (buildJsonObject, parseToJsonElement)
     // before handing them to ChatConfiguration / the content source. Runtime lib only - the demo declares no
