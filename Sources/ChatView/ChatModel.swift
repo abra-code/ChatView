@@ -667,6 +667,64 @@ public struct Participant: Identifiable, Equatable, Sendable, Codable {
 /// `model` is a DISPLAY name and may be absent. Agents advertise a model through session
 /// `configOptions`, but not all of them do - mlx-agent advertises none at all - so a host that
 /// knows better can supply one through its configuration, and neither source is guaranteed.
+/// What an agent did to a restored conversation when it summarized instead of replaying it.
+///
+/// THE POINT OF CARRYING THIS AT ALL IS THAT THE USER CAN READ IT. A summary the model holds and
+/// the person cannot see is a context loss they can only infer from degraded answers - they have
+/// to guess what was dropped from the way it starts getting things wrong. Shown, they can simply
+/// restate whatever the digest missed.
+///
+/// Structured rather than prose because the parts answer different questions: `decisions` is what
+/// was settled, `openThreads` is what was not, and a reader scanning for what is MISSING needs
+/// them apart. `summarizer` matters for the same reason - "the summary is thin" and "the summary
+/// was written by a 3B on-device model" are the same observation from the reader's side.
+public struct SessionDigest: Equatable, Sendable, Codable {
+    /// The model that wrote the summary, as the agent names it.
+    public let summarizer: String?
+    /// How many messages were replaced, and how many are still verbatim after it.
+    public let droppedTurns: Int?
+    public let verbatimTurns: Int?
+
+    public let unresolvedIntent: String?
+    public let establishedFacts: [String]
+    public let decisions: [String]
+    public let openThreads: [String]
+    public let userPreferences: [String]
+
+    public init(summarizer: String? = nil, droppedTurns: Int? = nil, verbatimTurns: Int? = nil,
+                unresolvedIntent: String? = nil, establishedFacts: [String] = [],
+                decisions: [String] = [], openThreads: [String] = [],
+                userPreferences: [String] = []) {
+        self.summarizer = summarizer
+        self.droppedTurns = droppedTurns
+        self.verbatimTurns = verbatimTurns
+        self.unresolvedIntent = unresolvedIntent
+        self.establishedFacts = establishedFacts
+        self.decisions = decisions
+        self.openThreads = openThreads
+        self.userPreferences = userPreferences
+    }
+
+    /// Every section is optional on the wire, so a digest with nothing in it is possible and must
+    /// not render as an empty disclosure the user opens for nothing.
+    public var isEmpty: Bool {
+        (unresolvedIntent?.isEmpty ?? true) && establishedFacts.isEmpty && decisions.isEmpty
+            && openThreads.isEmpty && userPreferences.isEmpty
+    }
+}
+
+/// What a host asks for when it wants a restore summarized rather than replayed. Both bounds are
+/// the agent's to clamp; nil means "your default".
+public struct PrimeCondense: Equatable, Sendable, Codable {
+    public let keepRecentTurns: Int?
+    public let maxDigestTokens: Int?
+
+    public init(keepRecentTurns: Int? = nil, maxDigestTokens: Int? = nil) {
+        self.keepRecentTurns = keepRecentTurns
+        self.maxDigestTokens = maxDigestTokens
+    }
+}
+
 public struct SessionEvent: Identifiable, Equatable, Sendable, Codable {
     public enum Kind: String, Codable, Sendable {
         case started        // a fresh conversation
@@ -681,12 +739,17 @@ public struct SessionEvent: Identifiable, Equatable, Sendable, Codable {
     public let timestamp: String?
     /// The model answering from this point on, as a person would read it.
     public let model: String?
+    /// Present when the conversation was summarized to get here, so the reader can see what the
+    /// model was actually given in place of the messages above.
+    public let digest: SessionDigest?
 
-    public init(id: String, kind: Kind, timestamp: String? = nil, model: String? = nil) {
+    public init(id: String, kind: Kind, timestamp: String? = nil, model: String? = nil,
+                digest: SessionDigest? = nil) {
         self.id = id
         self.kind = kind
         self.timestamp = timestamp
         self.model = model
+        self.digest = digest
     }
 }
 
@@ -889,6 +952,9 @@ public enum ChatConnectionState: String, Sendable, Equatable, Codable {
 /// "agentic" demo style); the ACP transport emits the full vocabulary.
 public enum ChatEvent: Sendable {
     case sessionReady(sessionID: String, configOptions: [SessionConfigOption])
+    /// A boundary the TRANSPORT noticed rather than the host: today, a prime that came back
+    /// condensed, where the digest and the summarizing model are known only to the agent.
+    case sessionEvent(SessionEvent)
     case sessionInfo(AgentSessionInfo)                     // agent identity + capabilities, once per established session
     case messageStart(itemID: String, role: ChatRole)
     case messageDelta(itemID: String, text: String)        // streaming token(s)

@@ -164,7 +164,8 @@ private enum EventCodec {
         // none of which belong in a transcript; their transient store effects are covered by
         // the ported store unit tests). The switch stays exhaustive on purpose: every new
         // ChatEvent must be decided about here rather than swallowed by a `default:`.
-        case .sessionReady, .sessionInfo, .currentModeChanged, .commandsAvailable, .configOptionsChanged:
+        case .sessionReady, .sessionInfo, .currentModeChanged, .commandsAvailable, .configOptionsChanged,
+             .sessionEvent:
             throw FixtureError.unsupportedEvent("\(event)")
         }
     }

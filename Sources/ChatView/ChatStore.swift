@@ -136,6 +136,10 @@ final class ChatStore: ObservableObject {
     // or re-configure (attach) re-applies the user's last choice, and so a re-inject that only
     // flips the flag is not swallowed by the lastLoadedContent dedup.
     private var lastPrimeDirective: ChatPrimeDirective = .resume
+    // The condense request that rode in with the current content, replayed on every prime this
+    // restore causes - including the DEFERRED one, which happens at send time, long after the
+    // injection that asked for it.
+    private var lastCondenseRequest: PrimeCondense?
 
     // Context-identity tracking behind `contextState` (published above with the other view
     // surfaces) and the deferred prime. `wireContext` mirrors what the agent's context is
@@ -406,7 +410,7 @@ final class ChatStore: ObservableObject {
         switch lastPrimeDirective {
         case .resume:
             // Context follows display, immediately (the documented default).
-            transport.primeHistory(messageItems)
+            transport.primeHistory(messageItems, condense: lastCondenseRequest)
             wireContext = current
             contextState = .synced
         case .fresh:
@@ -493,7 +497,9 @@ final class ChatStore: ObservableObject {
         guard contextState == .pending, let transport else { return }
         let current = Self.wireEntries(from: items)
         if wireContext != current {
-            transport.primeHistory(messageItems)
+            // Carries the request the RESTORE arrived with, not one from now: this fires at send
+            // time, and the user's choice was made when they opened the conversation.
+            transport.primeHistory(messageItems, condense: lastCondenseRequest)
         }
         wireContext = current
         contextState = .synced
@@ -696,6 +702,13 @@ final class ChatStore: ObservableObject {
         case .sessionReady(let sessionID, let options):
             configOptions = options
             logger.log("Chat session ready: \(sessionID)", .verbose)
+
+        case .sessionEvent(let event):
+            // Appended like any other item, and journaled like one: a host that persists the
+            // transcript keeps the record of what its model was actually given, so reopening the
+            // conversation tomorrow still answers "what was summarized away here".
+            items.append(.sessionEvent(event))
+            fireEntry(type: "sessionEvent", id: event.id, data: event)
 
         case .sessionInfo(let info):
             sessionInfo = info
@@ -961,30 +974,66 @@ final class ChatStore: ObservableObject {
         // in the dedup: the same transcript re-injected with a flipped flag must re-apply
         // (e.g. the user reopens a conversation Read Only after having resumed it).
         let prime = Self.parsePrimeDirective(newContent)
-        guard transcript != lastLoadedContent || prime != lastPrimeDirective else {
+        // Same reasoning as `prime`: a re-injection that only changes how the context should be
+        // built still has to re-apply, or asking to summarize a conversation already on screen
+        // would be silently ignored.
+        let condense = Self.parseCondenseRequest(newContent)
+        guard transcript != lastLoadedContent || prime != lastPrimeDirective
+                || condense != lastCondenseRequest else {
             return
         }
         lastPrimeDirective = prime
+        lastCondenseRequest = condense
         applyLoadedTranscript(transcript)
         lastLoadedContent = transcript
+    }
+
+    /// Reads the transient `condense` object off the same raw content value.
+    ///
+    /// Absent means "replay everything", which is the documented default and the safe one. An
+    /// EMPTY object is a real request - "summarize, your defaults" - so presence of the key, not
+    /// its contents, is what decides.
+    /// Test seam for the parser above. Internal, and named for what it is, so nobody mistakes it
+    /// for API: the parser is private because hosts never call it, but it decides whether a
+    /// user's choice reaches the agent at all, which is worth asserting directly.
+    static func parseCondenseRequestForTests(_ raw: Any?) -> PrimeCondense? {
+        parseCondenseRequest(raw)
+    }
+
+    private static func parseCondenseRequest(_ raw: Any?) -> PrimeCondense? {
+        guard let dict = Self.contentDictionary(raw), let ask = dict["condense"] else {
+            return nil
+        }
+        guard let body = ask as? [String: Any] else {
+            // `"condense": true` is a reasonable thing for a host to write, and refusing it over
+            // a type mismatch would be pedantry: it means the same as an empty object.
+            return (ask as? Bool) == true ? PrimeCondense() : nil
+        }
+        return PrimeCondense(keepRecentTurns: (body["keepRecentTurns"] as? NSNumber)?.intValue,
+                             maxDigestTokens: (body["maxDigestTokens"] as? NSNumber)?.intValue)
     }
 
     /// Reads the transient `prime` directive off a raw states["content"] value, accepting the
     /// same three shapes ChatTranscript.decode does (dict / JSON string / Data). true / absent /
     /// unparseable -> resume (context follows display, the documented default); false -> fresh;
     /// "defer" -> deferred (display now, prime lazily on the next send).
-    private static func parsePrimeDirective(_ raw: Any?) -> ChatPrimeDirective {
-        let dict: [String: Any]?
+    /// The three shapes a host can inject content as, reduced to a dictionary. Shared by both
+    /// transient-directive readers so they cannot come to disagree about what counts as content.
+    private static func contentDictionary(_ raw: Any?) -> [String: Any]? {
         switch raw {
         case let value as [String: Any]:
-            dict = value
+            return value
         case let string as String:
-            dict = (string.data(using: .utf8).flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any]
+            return (string.data(using: .utf8).flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any]
         case let data as Data:
-            dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         default:
-            dict = nil
+            return nil
         }
+    }
+
+    private static func parsePrimeDirective(_ raw: Any?) -> ChatPrimeDirective {
+        let dict = Self.contentDictionary(raw)
         switch dict?["prime"] {
         case let flag as Bool:
             return flag ? .resume : .fresh

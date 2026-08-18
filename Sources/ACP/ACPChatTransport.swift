@@ -72,6 +72,9 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
     // this transport forwards it to agents that advertise the `sessionPrime` capability.
     private var supportsPrime = false                 // initialize: agentCapabilities.sessionPrime == true
     private var pendingPrime: [ChatMessage]?          // prime requested before session/new resolved (last write wins)
+    // Stashed WITH its wire payload, and cleared with it. A condense request that outlived the
+    // prime it belonged to would summarize a later, unrelated restore.
+    private var pendingCondense: PrimeCondense?
     private var primeTask: Task<Void, Never>?         // in-flight wire prime; prompts chain behind it
     private var hasPrimedOnce = false                 // a non-empty prime was enqueued (an empty reset is meaningful after this)
     private var hasEverPrompted = false               // a turn ran (an empty reset is meaningful after this too)
@@ -249,10 +252,12 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
                     self.sessionID = sessionID
                     self.sessionOptions = options
                     if let stash = pendingPrime {
+                        let stashedCondense = pendingCondense
                         pendingPrime = nil
+                        pendingCondense = nil
                         if !stash.isEmpty { hasPrimedOnce = true }
                         primeTask = Task { [weak self] in
-                            await self?.sendPrime(stash)
+                            await self?.sendPrime(stash, condense: stashedCondense)
                         }
                     }
                     return false
@@ -393,7 +398,9 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
     /// life of the transport. With both snapshot-and-register pairs atomic, every task can
     /// only await tasks registered strictly before its own registration, so the wait graph
     /// is acyclic under any interleaving.
-    func primeHistory(_ messages: [ChatMessage]) {
+    func primeHistory(_ messages: [ChatMessage]) { primeHistory(messages, condense: nil) }
+
+    func primeHistory(_ messages: [ChatMessage], condense: PrimeCondense?) {
         // Model context is user/assistant text only: session notices (.system) and P2P
         // (.remote) are display items, not conversation the model produced or saw.
         let wire = messages.filter { ($0.role == .local || $0.role == .agent) && !$0.text.isEmpty }
@@ -409,6 +416,7 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
                 // start() flushes it right after session/new. The capability is unknown
                 // until initialize resolves, so the stash is unconditional.
                 pendingPrime = wire
+                pendingCondense = condense
                 return nil
             }
             guard supportsPrime else {
@@ -423,7 +431,7 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
             primeTask = Task { [weak self] in
                 await previousPrime?.value   // last prime wins; never two on the wire at once
                 await inFlightTurn?.value    // the agent's busy flag clears when the turn RESOLVES
-                await self?.sendPrime(wire)
+                await self?.sendPrime(wire, condense: condense)
             }
             // A restore during a streaming turn: the turn must be cancelled for inFlightTurn
             // to resolve (the store has already cleared its streaming UI state). The notify
@@ -450,7 +458,7 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
     /// clears its busy flag a hair after responding to a cancelled prompt), so one bounded
     /// retry; anything else surfaces as a system line - a failed prime must not kill the
     /// session, but the user must know Resume did not take.
-    private func sendPrime(_ messages: [ChatMessage]) async {
+    private func sendPrime(_ messages: [ChatMessage], condense: PrimeCondense?) async {
         let (connection, sessionID, supported) = lock.withLock { (self.connection, self.sessionID, self.supportsPrime) }
         guard let connection, let sessionID else {
             return
@@ -468,12 +476,23 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
                 try? await Task.sleep(nanoseconds: 300_000_000)
             }
             do {
-                let result = try await connection.request("session/prime", [
+                var params: [String: Any] = [
                     "sessionId": sessionID,
                     "messages": wire,
-                ])
+                ]
+                if let condense {
+                    var ask: [String: Any] = [:]
+                    if let keep = condense.keepRecentTurns { ask["keepRecentTurns"] = keep }
+                    if let maxTokens = condense.maxDigestTokens { ask["maxDigestTokens"] = maxTokens }
+                    // Sent even when empty: the KEY is the request. Omitting it because both
+                    // bounds are nil would silently turn "summarize with your defaults" into
+                    // "replay everything", which is the opposite of what the caller asked.
+                    params["condense"] = ask
+                }
+                let result = try await connection.request("session/prime", params)
                 let count = (result["primed"] as? NSNumber)?.intValue ?? wire.count
                 logger.log("ACP: primed \(count) messages (\(wire.count) sent)", .verbose)
+                emitCondensationEvent(from: result, requested: condense != nil)
                 return
             } catch let error as ACPConnectionError where error.code == -32003 {
                 lastError = error   // transient: the cancelled turn had not fully resolved agent-side
@@ -483,6 +502,70 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
             }
         }
         eventSink.yield(.system(text: "Could not restore the conversation context to the agent: \(lastError.map { "\($0)" } ?? "unknown error")"))
+    }
+
+    /// The marker's own clock. Stamped HERE rather than taken from the agent because the agent
+    /// does not send one, and a marker whose time came from the reader's machine is the honest
+    /// reading anyway: it records when this session picked the conversation back up.
+    ///
+    /// ISO8601DateFormatter is not Sendable, but a configured instance's string(from:) is
+    /// read-only and safe to share - the same reasoning ChatTimestamp documents for parsing.
+    nonisolated(unsafe) private static let iso: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    private static func isoNow() -> String { iso.string(from: Date()) }
+
+    /// Turn a condensed prime into something the user can read.
+    ///
+    /// A digest the model holds and the person cannot see is a context loss they can only infer
+    /// from the answers getting worse - they end up guessing what was dropped. So the moment the
+    /// agent says it summarized, the transcript gets a marker carrying the summary itself.
+    ///
+    /// SILENT WHEN NOTHING WAS CONDENSED. `condensed: false` is the ordinary, healthy answer -
+    /// the agent primed the full history and said why - and a marker announcing "nothing was
+    /// summarized" on every restore would be noise for the common case. The `reason` is logged
+    /// instead, because it explains a slow first turn to whoever is reading the log.
+    private func emitCondensationEvent(from result: [String: Any], requested: Bool) {
+        let condensed = (result["condensed"] as? NSNumber)?.boolValue ?? false
+        guard condensed else {
+            if requested, let reason = result["reason"] as? String {
+                logger.log("ACP: prime was not condensed - \(reason)", .verbose)
+            }
+            return
+        }
+
+        let summarizer = result["summarizer"] as? String
+        let dropped = result["dropped"] as? [String: Any]
+        let droppedTurns = (dropped?["turns"] as? NSNumber)?.intValue
+        let primed = (result["primed"] as? NSNumber)?.intValue
+        let body = result["digest"] as? [String: Any] ?? [:]
+
+        // The verbatim tail is what the reader most wants bounded ("how much of this is exact?").
+        // `primed` counts the REPLACEMENT history, which includes the preamble and, usually, an
+        // acknowledgment turn - so the tail is primed minus those. The agent documents `injected`
+        // as 1 or 2 and does not send it, so this is the one number here that is an estimate; it
+        // is reported only when it comes out sane.
+        let verbatim = primed.map { max(0, $0 - 2) }
+
+        let digest = SessionDigest(
+            summarizer: summarizer,
+            droppedTurns: droppedTurns,
+            verbatimTurns: verbatim,
+            unresolvedIntent: body["unresolvedIntent"] as? String,
+            establishedFacts: body["establishedFacts"] as? [String] ?? [],
+            decisions: body["decisions"] as? [String] ?? [],
+            openThreads: body["openThreads"] as? [String] ?? [],
+            userPreferences: body["userPreferences"] as? [String] ?? [])
+
+        eventSink.yield(.sessionEvent(SessionEvent(
+            id: "condense-\(UUID().uuidString)",
+            kind: .resumed,
+            timestamp: Self.isoNow(),
+            model: nil,
+            digest: digest)))
     }
 
     /// Changes a session option. The primary method is the generic

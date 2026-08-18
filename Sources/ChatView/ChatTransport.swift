@@ -93,6 +93,14 @@ public protocol ChatTransport: AnyObject, Sendable {
     /// notices) are omitted. A text-protocol transport maps role -> wire; a transport whose
     /// history lives server-side may ignore it. Default: no-op.
     func primeHistory(_ messages: [ChatMessage])
+
+    /// The same, asking the agent to SUMMARIZE the older part instead of replaying all of it.
+    ///
+    /// Additive and opt-in on both sides: the default implementation below ignores the request,
+    /// and an agent that does not know the key ignores it too. THE FALLBACK IS ALWAYS FULL
+    /// FIDELITY, NEVER TRUNCATION - a transport that cannot condense must still deliver the whole
+    /// conversation, because half a context that claims to be whole is worse than a slow prime.
+    func primeHistory(_ messages: [ChatMessage], condense: PrimeCondense?)
     /// Reserves any id namespaces this transport MINTS, so a turn continued after a transcript
     /// restore never reuses an id already present in the loaded items. `ids` is EVERY item id in
     /// the restored transcript (messages, thoughts, tool cards, ...) - not just the messages
@@ -113,6 +121,9 @@ public extension ChatTransport {
     /// Default: a transport with no client-owned wire history (the demo `local` transport, or
     /// an agent transport whose conversation state lives server-side) ignores a prime.
     func primeHistory(_ messages: [ChatMessage]) {}
+    /// Ignoring the request and priming in full is the correct no-op: the caller still gets a
+    /// complete context, just a slower first turn.
+    func primeHistory(_ messages: [ChatMessage], condense: PrimeCondense?) { primeHistory(messages) }
     /// Default: no-op - only a transport that mints launch-reset per-turn ids a restore could
     /// re-alias needs to override this (openai-sse and acp do).
     func reserveIDs(seen ids: [String]) {}

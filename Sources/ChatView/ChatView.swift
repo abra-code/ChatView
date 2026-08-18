@@ -1149,25 +1149,89 @@ private struct SlashCommandMenuView: View {
 // compete with the messages it exists to attribute.
 private struct SessionEventRow: View {
     let event: SessionEvent
+    var initiallyExpanded: Bool = false
 
     var body: some View {
+        if let digest = event.digest, !digest.isEmpty {
+            // A digest the model holds and the reader cannot see is a context loss they can only
+            // infer from the answers getting worse. Collapsed by default so it does not shout,
+            // but always one click from readable - the whole point is that a person can notice
+            // the summary missed something and simply say it again.
+            DisclosureGroup(isExpanded: $expanded) {
+                DigestBody(digest: digest)
+                    .padding(.top, 4)
+            } label: {
+                rule(text: SessionEventText.caption(event, digest: digest))
+            }
+            .disclosureGroupStyle(.automatic)
+            .padding(.vertical, 6)
+            .onAppear { expanded = initiallyExpanded }
+        } else {
+            rule(text: SessionEventText.caption(event))
+                .padding(.vertical, 6)
+                .accessibilityElement(children: .combine)
+        }
+    }
+
+    @State private var expanded = false
+
+    private func rule(text: String) -> some View {
         HStack(spacing: 8) {
             line
-            Text(SessionEventText.caption(event))
+            Text(text)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             line
         }
-        .padding(.vertical, 6)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(SessionEventText.caption(event))
+        .accessibilityLabel(text)
     }
 
     private var line: some View {
         Rectangle()
             .fill(Color.secondary.opacity(0.25))
             .frame(height: 1)
+    }
+}
+
+// The digest's sections, each omitted when empty.
+//
+// SEPARATE SECTIONS RATHER THAN PROSE, because the parts answer different questions and a reader
+// is scanning for what is MISSING: "decisions" is what was settled and "open threads" is what was
+// not, and running them together buries exactly the distinction that would make someone notice a
+// gap worth restating.
+private struct DigestBody: View {
+    let digest: SessionDigest
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let intent = digest.unresolvedIntent, !intent.isEmpty {
+                section("Working on", [intent])
+            }
+            section("Established", digest.establishedFacts)
+            section("Decisions", digest.decisions)
+            section("Open threads", digest.openThreads)
+            section("Preferences", digest.userPreferences)
+        }
+        .font(.caption)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, 4)
+    }
+
+    @ViewBuilder
+    private func section(_ title: String, _ entries: [String]) -> some View {
+        if !entries.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
+                    Text("- \(entry)")
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
     }
 }
 

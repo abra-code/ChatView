@@ -121,8 +121,29 @@ struct DualTranscriptRow: View {
 /// from what is present rather than filling a sentence template, which would otherwise read as
 /// "Resumed with  " on the commonest case of all.
 enum SessionEventText {
-    static func caption(_ event: SessionEvent) -> String {
+    /// The plain boundary caption.
+    static func caption(_ event: SessionEvent) -> String { caption(event, digest: nil) }
+
+    /// With a digest, the caption also has to carry the SIZE of what was replaced and WHO wrote
+    /// the replacement - "64 messages summarized" is the fact a reader needs to judge whether to
+    /// go looking, and the summarizing model is how they judge how much to trust it. A 3B
+    /// on-device summary and a 32k local-model summary deserve different levels of suspicion.
+    static func caption(_ event: SessionEvent, digest: SessionDigest?) -> String {
         var parts: [String] = [verb(event.kind)]
+        if let digest {
+            if let dropped = digest.droppedTurns {
+                parts.append("- \(dropped) earlier \(dropped == 1 ? "message" : "messages") summarized")
+            } else {
+                parts.append("- earlier messages summarized")
+            }
+            if let by = digest.summarizer, !by.isEmpty {
+                parts.append("by \(by)")
+            }
+            if let stamp = event.timestamp, let date = ChatTimestamp.parse(stamp) {
+                parts.append(formatter.string(from: date))
+            }
+            return parts.joined(separator: " ")
+        }
         if let model = event.model, !model.isEmpty {
             parts.append(event.kind == .modelChanged ? "to \(model)" : "with \(model)")
         }
