@@ -148,6 +148,10 @@ final class ChatStore: ObservableObject {
     // forces a re-prime on the next send. Updated only at discrete events (prime, turn end,
     // restore) - never during streaming.
     private var wireContext: [WireEntry]? = []
+    // The condense request the agent's CURRENT context was built with, tracked alongside the
+    // messages for the same reason: "is the agent's context what the display asks for" is not
+    // answered by the messages alone once a restore can ask for them to be summarized.
+    private var wireCondense: PrimeCondense?
 
     // A restore that arrived while a turn was in flight supersedes that turn: the restore
     // path already set the truthful context state (and the transport chains any prime behind
@@ -412,6 +416,7 @@ final class ChatStore: ObservableObject {
             // Context follows display, immediately (the documented default).
             transport.primeHistory(messageItems, condense: lastCondenseRequest)
             wireContext = current
+            wireCondense = lastCondenseRequest
             contextState = .synced
         case .fresh:
             // "prime": false (a Read Only restore) shows the transcript but seeds an EMPTY wire
@@ -425,7 +430,14 @@ final class ChatStore: ObservableObject {
             // (the user browsed away and back without sending), it is still synced and the next
             // send skips the prime entirely; otherwise the prime fires lazily in
             // syncDeferredContext() when the user next sends.
-            contextState = (wireContext == current) ? .synced : .pending
+            //
+            // THE REQUEST IS PART OF THE COMPARISON, not just the messages. Changing only the
+            // summarize choice leaves the transcript byte-identical, so a messages-only test says
+            // "already synced" and the next send skips the prime - the user picks Summarize,
+            // nothing happens, and nothing reports why. It is reachable the moment a conversation
+            // has been sent into once, which is when the menu is most likely to be used.
+            contextState = (wireContext == current && wireCondense == lastCondenseRequest)
+                ? .synced : .pending
         }
     }
 
@@ -496,12 +508,13 @@ final class ChatStore: ObservableObject {
     private func syncDeferredContext() {
         guard contextState == .pending, let transport else { return }
         let current = Self.wireEntries(from: items)
-        if wireContext != current {
+        if wireContext != current || wireCondense != lastCondenseRequest {
             // Carries the request the RESTORE arrived with, not one from now: this fires at send
             // time, and the user's choice was made when they opened the conversation.
             transport.primeHistory(messageItems, condense: lastCondenseRequest)
         }
         wireContext = current
+        wireCondense = lastCondenseRequest
         contextState = .synced
     }
 
