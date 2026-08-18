@@ -69,6 +69,8 @@ enum ChatViewDiagnostics {
             return "callEvent"
         case .file:
             return "file"
+        case .sessionEvent(let event):
+            return "sessionEvent(\(event.kind.rawValue))"
         }
     }
 

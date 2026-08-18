@@ -651,6 +651,45 @@ public struct Participant: Identifiable, Equatable, Sendable, Codable {
 /// from them - and, since P0-2, the unit of the persisted transcript, so it is public and
 /// Codable. Codable uses a stable `type` discriminator ("message" / "thought" / "toolCall"
 /// / "image" / "system" / "error") so the on-disk format does not drift.
+/// A record, in the transcript, of something changing about the SESSION rather than about the
+/// conversation - it started, it was resumed, the model answering it changed.
+///
+/// WHY THIS IS A TRANSCRIPT ITEM AND NOT A STATUS SURFACE. A status line answers "what is true
+/// now"; this answers "what was true then", which is the question a reader of an old conversation
+/// actually has. A conversation resumed three times with three different models is one transcript
+/// whose parts were written by different authors, and without a record in the flow there is
+/// nothing to attribute them to - the status line only ever shows the last one.
+///
+/// APPENDED, NEVER INSERTED. The store is append-only, and appending is also the honest
+/// placement: the event happened at that point in time, so it belongs after everything that
+/// preceded it and before everything that follows.
+///
+/// `model` is a DISPLAY name and may be absent. Agents advertise a model through session
+/// `configOptions`, but not all of them do - mlx-agent advertises none at all - so a host that
+/// knows better can supply one through its configuration, and neither source is guaranteed.
+public struct SessionEvent: Identifiable, Equatable, Sendable, Codable {
+    public enum Kind: String, Codable, Sendable {
+        case started        // a fresh conversation
+        case resumed        // a saved conversation loaded back into a session
+        case modelChanged   // the model answering changed mid-conversation
+    }
+
+    public let id: String
+    public let kind: Kind
+    /// ISO 8601, same format ChatMessage uses. Optional because a host that does not stamp its
+    /// items should not be forced to start.
+    public let timestamp: String?
+    /// The model answering from this point on, as a person would read it.
+    public let model: String?
+
+    public init(id: String, kind: Kind, timestamp: String? = nil, model: String? = nil) {
+        self.id = id
+        self.kind = kind
+        self.timestamp = timestamp
+        self.model = model
+    }
+}
+
 public enum ChatItem: Identifiable, Equatable, Sendable, Codable {
     case message(ChatMessage)
     case thought(ChatMessage)
@@ -661,6 +700,7 @@ public enum ChatItem: Identifiable, Equatable, Sendable, Codable {
     case memberEvent(MemberEvent)
     case callEvent(CallEvent)
     case file(ChatFile)
+    case sessionEvent(SessionEvent)
 
     public var id: String {
         switch self {
@@ -673,15 +713,16 @@ public enum ChatItem: Identifiable, Equatable, Sendable, Codable {
         case .memberEvent(let event): return event.id
         case .callEvent(let event):  return event.id
         case .file(let file):        return file.id
+        case .sessionEvent(let event): return event.id
         }
     }
 
     private enum CodingKeys: String, CodingKey {
-        case type, message, toolCall, id, role, image, text, memberEvent, callEvent, file
+        case type, message, toolCall, id, role, image, text, memberEvent, callEvent, file, sessionEvent
     }
 
     private enum ItemType: String, Codable {
-        case message, thought, toolCall, image, system, error, memberEvent, callEvent, file
+        case message, thought, toolCall, image, system, error, memberEvent, callEvent, file, sessionEvent
     }
 
     public init(from decoder: Decoder) throws {
@@ -710,6 +751,8 @@ public enum ChatItem: Identifiable, Equatable, Sendable, Codable {
             self = .callEvent(try container.decode(CallEvent.self, forKey: .callEvent))
         case .file:
             self = .file(try container.decode(ChatFile.self, forKey: .file))
+        case .sessionEvent:
+            self = .sessionEvent(try container.decode(SessionEvent.self, forKey: .sessionEvent))
         }
     }
 
@@ -747,6 +790,9 @@ public enum ChatItem: Identifiable, Equatable, Sendable, Codable {
         case .file(let file):
             try container.encode(ItemType.file, forKey: .type)
             try container.encode(file, forKey: .file)
+        case .sessionEvent(let event):
+            try container.encode(ItemType.sessionEvent, forKey: .type)
+            try container.encode(event, forKey: .sessionEvent)
         }
     }
 }

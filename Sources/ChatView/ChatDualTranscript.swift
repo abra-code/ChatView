@@ -89,6 +89,11 @@ struct DualTranscriptRow: View {
             CenteredCaption(text: text, systemImage: nil, tint: .secondary)
         case .error(_, let text):
             CenteredCaption(text: text, systemImage: "exclamationmark.triangle", tint: .red)
+        case .sessionEvent(let event):
+            // A session boundary is as meaningful in a P2P transcript as in an agentic one, and
+            // CenteredCaption is already the shape this view gives every non-bubble row.
+            CenteredCaption(text: SessionEventText.caption(event), systemImage: "clock.arrow.circlepath",
+                            tint: .secondary)
         case .thought, .toolCall:
             // Agentic surfaces are not part of a P2P conversation.
             EmptyView()
@@ -104,6 +109,44 @@ struct DualTranscriptRow: View {
 }
 
 // MARK: - Member / call event captions
+
+/// The wording of a session boundary, in one place.
+///
+/// Shared by the agentic transcript's SessionEventRow and the dual transcript's centered caption
+/// for the reason every other *Text enum here exists: two views phrasing the same event
+/// differently is a bug nobody notices until a screenshot puts them side by side.
+///
+/// BOTH DETAILS ARE OPTIONAL. Agents advertise a model through session configOptions and not all
+/// of them do - mlx-agent advertises none - and a host need not stamp a time. So this composes
+/// from what is present rather than filling a sentence template, which would otherwise read as
+/// "Resumed with  " on the commonest case of all.
+enum SessionEventText {
+    static func caption(_ event: SessionEvent) -> String {
+        var parts: [String] = [verb(event.kind)]
+        if let model = event.model, !model.isEmpty {
+            parts.append(event.kind == .modelChanged ? "to \(model)" : "with \(model)")
+        }
+        if let stamp = event.timestamp, let date = ChatTimestamp.parse(stamp) {
+            parts.append(formatter.string(from: date))
+        }
+        return parts.joined(separator: " ")
+    }
+
+    private static func verb(_ kind: SessionEvent.Kind) -> String {
+        switch kind {
+        case .started:      return "Started"
+        case .resumed:      return "Resumed"
+        case .modelChanged: return "Switched"
+        }
+    }
+
+    private static let formatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
+}
 
 enum MemberEventText {
     static func caption(_ event: MemberEvent) -> String {

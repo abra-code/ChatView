@@ -435,6 +435,8 @@ public struct ChatView: View {
                 .font(.caption)
                 .foregroundStyle(.red)
                 .frame(maxWidth: .infinity, alignment: .center)
+        case .sessionEvent(let event):
+            SessionEventRow(event: event)
         case .memberEvent, .callEvent, .file:
             // P2P (v2) rows (member / call captions, file / voice items) are built in P6.
             // No v1 document produces these items, so the placeholder never renders for v1.
@@ -1133,6 +1135,39 @@ private struct SlashCommandMenuView: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+// MARK: - Session event row
+
+// A rule across the transcript marking where the session itself changed: started, resumed, or
+// handed to a different model. Centered caption between two hairlines - the same visual weight
+// as a date separator, because that is what it is: a boundary in time rather than something
+// anyone said.
+//
+// Deliberately quiet. It appears at least once in every conversation, so anything louder would
+// compete with the messages it exists to attribute.
+private struct SessionEventRow: View {
+    let event: SessionEvent
+
+    var body: some View {
+        HStack(spacing: 8) {
+            line
+            Text(SessionEventText.caption(event))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            line
+        }
+        .padding(.vertical, 6)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(SessionEventText.caption(event))
+    }
+
+    private var line: some View {
+        Rectangle()
+            .fill(Color.secondary.opacity(0.25))
+            .frame(height: 1)
     }
 }
 
