@@ -231,6 +231,11 @@ internal fun groupingSignature(item: ChatItem, participants: List<Participant>):
         is ChatItem.Error -> GroupingSignature("system", false, null)
         is ChatItem.Thought -> GroupingSignature("agent", false, null)
         is ChatItem.ToolCall -> GroupingSignature("agent", false, null)
+        // A session boundary is centered and ungroupable like the other markers, but carries NO layout timestamp -
+        // Swift's nonGroupableTimestamp answers nil for it (ChatView.swift:609-616), and buildRowContext gives the
+        // row none either. Feed one in and the day separator is assigned to the marker's row, which then has no
+        // timestamp to draw it with: the day header disappears from the transcript entirely.
+        is ChatItem.SessionEventItem -> GroupingSignature("system", false, null)
     }
 
 /** The layout core's Input for a signature (parses the timestamp here, inside the memoized layout pass). */

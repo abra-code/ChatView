@@ -21,6 +21,10 @@ class FixtureTranscriptInteropTest {
         "transcript-v1-minimal.json",
         "transcript-v2-people.json",
         "transcript-v2-group.json",
+        // The session-marker golden. Kotlin did not know `sessionEvent` at all, so every conversation the current
+        // macOS host writes failed to decode here - and no other golden carries one, which is why the gate could not
+        // see it. Double-free by construction, so it gets the strict canonical-string check.
+        "transcript-session-event.json",
     )
     private val doubleBearingGoldens = listOf(
         "transcript-mixed-agentic.json",
@@ -65,5 +69,30 @@ class FixtureTranscriptInteropTest {
         for (name in doubleBearingGoldens) {
             assertInteropGate(name, strictString = false)
         }
+    }
+
+    /**
+     * The lossy-decode parity gate. `lossy-unreadable-items.json` is the one fixture whose input is deliberately
+     * unreadable: an item with no `type` (the exact shape that cost a real user a conversation), a type from the
+     * future, a known type over an unreadable payload, a `type` that is not a string at all, elements that are not
+     * objects at all, and a real item named like a placeholder. Both platforms must make the SAME transcript of it - same number of items, same order,
+     * same placeholder ids, same wording - or a conversation reads differently on the two, or opens on one and not
+     * the other. `.expected.json` is the Apple decoder's own output (emitted by FixtureEmitterTests).
+     *
+     * It is deliberately NOT named `transcript-*`: goldens under that prefix must re-encode to their own bytes, and
+     * this one cannot - a placeholder encodes as an ordinary error row, which is exactly why a host must never
+     * persist a decoded transcript back over its source.
+     */
+    @Test
+    fun unreadableItemsDecodeToTheCommittedPlaceholders() {
+        val decoded = decode(readFixture("lossy-unreadable-items.json"))
+        assertEquals("every element must cost exactly one slot", 12, decoded.items.size)
+        assertEquals(9, decoded.unreadableItemCount)
+        val expected = chatJson.parseToJsonElement(readFixture("lossy-unreadable-items.expected.json"))
+        assertEquals(
+            "the placeholders drifted from the committed cross-platform expectation",
+            canonicalJson(expected),
+            canonicalJson(reencode(decoded)),
+        )
     }
 }

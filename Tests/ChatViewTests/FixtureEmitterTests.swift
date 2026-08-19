@@ -488,8 +488,20 @@ final class FixtureEmitterTests: XCTestCase {
         // (a) Transcript goldens.
         try writeTranscript(minimalV1Transcript(), "transcript-v1-minimal.json")
         try writeTranscript(mixedAgenticTranscript(), "transcript-mixed-agentic.json")
+        try writeTranscript(sessionMarkerTranscript(), "transcript-session-event.json")
         try writeTranscript(try await p2pTranscript(scenario: "people"), "transcript-v2-people.json")
         try writeTranscript(try await p2pTranscript(scenario: "group"), "transcript-v2-group.json")
+
+        // (a2) The lossy-decode parity pair. The INPUT is hand-written and committed, because no
+        // encoder produces those shapes on purpose - an item with no `type`, a type from the
+        // future, a known type over an unreadable payload, a `type` that is not a string at all,
+        // and elements that are not objects at all. Its EXPECTED side is emitted here, so the placeholder ids and wording are the Apple
+        // decoder's own output and Android compares against the same bytes rather than against a
+        // second opinion. Read, not built: the input is the contract, this only records what this
+        // decoder makes of it.
+        let lossyInput = dir.appendingPathComponent("lossy-unreadable-items.json")
+        let lossy = try JSONDecoder().decode(ChatTranscript.self, from: try Data(contentsOf: lossyInput))
+        try writeTranscript(lossy, "lossy-unreadable-items.expected.json")
 
         // (b) Routing scenarios: a JSONL event stream + its final transcript.
         for scenario in allScenarios() {
@@ -503,6 +515,44 @@ final class FixtureEmitterTests: XCTestCase {
     // The v1 minimal golden matches ChatTranscriptTests.testV1JSONShapeIsPinned exactly.
     private func minimalV1Transcript() -> ChatTranscript {
         ChatTranscript(items: [.message(ChatMessage(id: "u1", role: .local, text: "Hi", isStreaming: false))])
+    }
+
+    // The session-marker golden. `sessionEvent` is the item type the macOS host now writes into every
+    // conversation it starts, resumes, or hands to another model, so a reader that cannot decode one
+    // cannot open a current conversation at all - which is exactly what happened on Android, where the
+    // type did not exist. None of the four goldens above contains one, so the interop gate could not
+    // see it. All three kinds are here, with a full digest, a digest that is entirely empty (possible,
+    // and the case that pins "the four arrays are written even when empty" into the contract), and no
+    // digest at all. Deliberately free of Double-typed fields so it joins the STRICT canonical-string
+    // side of the gate.
+    private func sessionMarkerTranscript() -> ChatTranscript {
+        ChatTranscript(
+            items: [
+                .sessionEvent(SessionEvent(id: "sess-1", kind: .started,
+                                           timestamp: "2026-08-18T21:00:00Z", model: "Qwen3-30B")),
+                .message(ChatMessage(id: "u1", role: .local, text: "Where did we get to?", isStreaming: false,
+                                     timestamp: "2026-08-18T21:00:05Z")),
+                .message(ChatMessage(id: "a1", role: .agent, text: "Picking up the Android port.", isStreaming: false,
+                                     timestamp: "2026-08-18T21:00:09Z")),
+                .sessionEvent(SessionEvent(
+                    id: "sess-2", kind: .resumed, timestamp: "2026-08-18T21:56:33Z", model: "Qwen3-30B",
+                    digest: SessionDigest(summarizer: "mlx-community/Qwen3-4B", droppedTurns: 64, verbatimTurns: 6,
+                                          unresolvedIntent: "finish the Kotlin decoder",
+                                          establishedFacts: ["the transcript format is frozen",
+                                                             "Fixtures/ is the cross-platform contract"],
+                                          decisions: ["mirror the Swift decoder rather than invent one"],
+                                          openThreads: ["rendering the marker on Android"],
+                                          userPreferences: ["ASCII only", "en_US spelling"]))),
+                .message(ChatMessage(id: "u2", role: .local, text: "Carry on.", isStreaming: false,
+                                     timestamp: "2026-08-18T21:57:00Z")),
+                .sessionEvent(SessionEvent(id: "sess-3", kind: .modelChanged,
+                                           timestamp: "2026-08-18T22:10:00Z", model: "Claude Opus 5")),
+                // A condense that reported nothing: every section empty, which must still round-trip as
+                // four empty arrays rather than as an absent digest body.
+                .sessionEvent(SessionEvent(id: "sess-4", kind: .resumed, timestamp: "2026-08-18T22:30:00Z",
+                                           digest: SessionDigest())),
+            ],
+            title: "Session Markers")
     }
 
     // Every ChatItem case (incl. thought / toolCall with diff + rawInput + rawOutput), plus usage,
@@ -612,6 +662,27 @@ final class FixtureReplayTests: XCTestCase {
 
             XCTAssertEqual(actual, expectedText, "replay of \(base) diverged from its expected transcript")
         }
+    }
+
+    /// The lossy-decode parity gate, and the one fixture whose input is deliberately unreadable. Both
+    /// platforms decode `lossy-unreadable-items.json` and must produce the SAME transcript: the same
+    /// number of items in the same order, the same placeholder ids, and the same wording. A divergence
+    /// here means a conversation reads differently on the two platforms, or - the case that started
+    /// this - opens on one and not on the other.
+    ///
+    /// Not named `transcript-*`, deliberately: the goldens under that prefix must re-encode to their own
+    /// bytes, and this one CANNOT. A placeholder encodes as an ordinary error row, which is precisely
+    /// why a host must never persist a decoded transcript back over its source.
+    func testUnreadableItemsDecodeToTheCommittedPlaceholders() throws {
+        let dir = fixturesDirectory()
+        let input = try Data(contentsOf: dir.appendingPathComponent("lossy-unreadable-items.json"))
+        let expected = try String(contentsOf: dir.appendingPathComponent("lossy-unreadable-items.expected.json"),
+                                  encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        let decoded = try JSONDecoder().decode(ChatTranscript.self, from: input)
+        XCTAssertEqual(decoded.items.count, 12, "every element must cost exactly one slot")
+        XCTAssertEqual(decoded.unreadableItemCount, 9)
+        XCTAssertEqual(String(decoding: try encoderSortedKeys().encode(decoded), as: UTF8.self), expected,
+                       "the placeholders drifted from the committed cross-platform expectation")
     }
 
     // The Swift side of the section-8 interop gate: every transcript golden decodes, re-encodes to the

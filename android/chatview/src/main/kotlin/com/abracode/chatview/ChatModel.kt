@@ -19,25 +19,29 @@ package com.abracode.chatview
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.Required
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.Transient
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.descriptors.buildClassSerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonEncoder
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -411,10 +415,65 @@ data class Participant(
 )
 
 /**
+ * What an agent did to a restored conversation when it summarized instead of replaying it.
+ *
+ * THE POINT OF CARRYING THIS AT ALL IS THAT THE USER CAN READ IT. A summary the model holds and the person cannot see
+ * is a context loss they can only infer from degraded answers. Structured rather than prose because the parts answer
+ * different questions: `decisions` is what was settled, `openThreads` is what was not, and a reader scanning for what
+ * is MISSING needs them apart.
+ *
+ * THE FOUR ARRAYS ARE @Required, WHICH IS THE WIRE CONTRACT, NOT A KOTLIN DETAIL. Swift declares them non-optional,
+ * so its synthesized Codable both writes them always (empty when empty) and REQUIRES them on decode, even though its
+ * memberwise init defaults them. @Required reproduces exactly that: default in the constructor, mandatory in the
+ * document, always encoded regardless of `encodeDefaults = false`. Drop it and Kotlin starts emitting documents
+ * Swift cannot read.
+ */
+@Serializable
+data class SessionDigest(
+    val summarizer: String? = null,          // the model that wrote the summary, as the agent names it
+    val droppedTurns: Int? = null,           // how many messages were replaced...
+    val verbatimTurns: Int? = null,          // ...and how many are still verbatim after it
+    val unresolvedIntent: String? = null,
+    @Required val establishedFacts: List<String> = emptyList(),
+    @Required val decisions: List<String> = emptyList(),
+    @Required val openThreads: List<String> = emptyList(),
+    @Required val userPreferences: List<String> = emptyList(),
+) {
+    /** Every section is optional in content, so a digest with nothing in it must not render as an empty disclosure. */
+    val isEmpty: Boolean
+        get() = unresolvedIntent.isNullOrEmpty() && establishedFacts.isEmpty() && decisions.isEmpty() &&
+            openThreads.isEmpty() && userPreferences.isEmpty()
+}
+
+/**
+ * A boundary in the conversation itself: it was started, a saved one was resumed, or the model answering changed
+ * mid-conversation. APPENDED, NEVER INSERTED - the event happened at that point in time.
+ *
+ * `model` is a DISPLAY name and may be absent (not every agent advertises one); `digest` is present when the
+ * conversation was summarized to get here, so the reader can see what the model was given in place of the messages
+ * above.
+ */
+@Serializable
+data class SessionEvent(
+    val id: String,
+    val kind: Kind,
+    val timestamp: String? = null,   // ISO 8601, the format ChatMessage uses
+    val model: String? = null,
+    val digest: SessionDigest? = null,
+) {
+    @Serializable
+    enum class Kind {
+        @SerialName("started") STARTED,             // a fresh conversation
+        @SerialName("resumed") RESUMED,             // a saved conversation loaded back into a session
+        @SerialName("modelChanged") MODEL_CHANGED,  // the model answering changed mid-conversation
+    }
+}
+
+/**
  * A heterogeneous, arrival-ordered transcript entry. Codable uses a stable `type` discriminator so the on-disk
  * format does not drift. The payload wrapper keys mirror the Swift CodingKeys exactly (`message` for both message
- * and thought, `toolCall`, `image`, `memberEvent`, `callEvent`, `file`; id / role / text inline for image / system
- * / error).
+ * and thought, `toolCall`, `image`, `memberEvent`, `callEvent`, `file`, `sessionEvent`; id / role / text inline for
+ * image / system / error).
  */
 @Serializable(with = ChatItemSerializer::class)
 sealed class ChatItem {
@@ -448,6 +507,10 @@ sealed class ChatItem {
 
     data class File(val file: ChatFile) : ChatItem() {
         override val id: String get() = file.id
+    }
+
+    data class SessionEventItem(val event: SessionEvent) : ChatItem() {
+        override val id: String get() = event.id
     }
 }
 
@@ -499,6 +562,10 @@ internal object ChatItemSerializer : KSerializer<ChatItem> {
                     put("type", "file")
                     put("file", json.encodeToJsonElement(value.file))
                 }
+                is ChatItem.SessionEventItem -> {
+                    put("type", "sessionEvent")
+                    put("sessionEvent", json.encodeToJsonElement(value.event))
+                }
             }
         }
         (encoder as JsonEncoder).encodeJsonElement(obj)
@@ -529,6 +596,7 @@ internal object ChatItemSerializer : KSerializer<ChatItem> {
             "memberEvent" -> ChatItem.MemberEventItem(field("memberEvent") { json.decodeFromJsonElement(it) })
             "callEvent" -> ChatItem.CallEventItem(field("callEvent") { json.decodeFromJsonElement(it) })
             "file" -> ChatItem.File(field("file") { json.decodeFromJsonElement(it) })
+            "sessionEvent" -> ChatItem.SessionEventItem(field("sessionEvent") { json.decodeFromJsonElement(it) })
             else -> throw SerializationException("Unknown ChatItem type `$type`")
         }
     }
@@ -549,6 +617,26 @@ data class ChatTranscript(
     val title: String? = null,
     val participants: List<Participant>? = null,
 ) {
+    /**
+     * How many items in the decoded transcript were replaced by a placeholder because they would not decode.
+     *
+     * NOT A CONSTRUCTOR PROPERTY, DELIBERATELY. It describes THIS DECODE, not the conversation, so it must stay out
+     * of the data class's generated `equals` / `hashCode`: ChatStore dedups restores with `==`, and if the count
+     * participated, a repaired transcript would differ from the damaged one by the count alone, the dedup would see
+     * a change that is not there, and re-applying the restore would discard a live turn that arrived in between.
+     * Keeping it in the body also keeps it out of the wire shape - it never round-trips.
+     */
+    var unreadableItemCount: Int = 0
+        internal set
+
+    /**
+     * The names of the transcript's SIDE surfaces (`usage` / `plan` / `title` / `participants`) that would not decode
+     * and fell back to their defaults, in the order the decoder reads them. Same reasoning as
+     * [unreadableItemCount]: it describes this decode, so it is neither in the wire shape nor in equality.
+     */
+    var unreadableFields: List<String> = emptyList()
+        internal set
+
     companion object {
         /**
          * Decodes a restored value into a transcript: a ChatTranscript passes through; a JSON object / string /
@@ -598,14 +686,95 @@ internal object ChatTranscriptSerializer : KSerializer<ChatTranscript> {
         // default for both a missing key and a null value); decoding JsonNull into a non-null serializer would throw.
         fun present(key: String): JsonElement? = obj[key]?.takeUnless { it is kotlinx.serialization.json.JsonNull }
         val version = present("version")?.jsonPrimitive?.intOrNull ?: 1
-        val items = present("items")?.let { json.decodeFromJsonElement(ListSerializer(ChatItemSerializer), it) } ?: emptyList()
-        val usage = present("usage")?.let { json.decodeFromJsonElement(UsageInfo.serializer(), it) }
-        val plan = present("plan")?.let { json.decodeFromJsonElement(ListSerializer(PlanEntry.serializer()), it) } ?: emptyList()
-        val title = present("title")?.jsonPrimitive?.contentOrNull
-        val participants = present("participants")?.let {
-            json.decodeFromJsonElement(ListSerializer(Participant.serializer()), it)
+        // ONE UNREADABLE ITEM MUST NOT COST THE CONVERSATION. A plain ListSerializer propagates the first element's
+        // failure and fails the whole transcript, which ChatTranscript.decode then swallows with runCatching - so a
+        // restore became a silent no-op and a real user lost a conversation to a single malformed entry. Each element
+        // is decoded on its own instead, and one that will not decode becomes a visible placeholder IN ITS OWN SLOT:
+        // losing one line of a conversation is a nuisance, losing the conversation is not, and losing either without
+        // being told is the worst of the three. `items` that is not an array at all is still rejected (below).
+        val lossy = present("items")?.let { decodeItemsLossily(json, it.jsonArray) } ?: LossyItems(emptyList(), 0)
+        // The same failure one key over. usage / plan / title / participants each threw out of this decode and were
+        // swallowed identically, so a future PlanEntry.Status case would drop a whole conversation exactly the way a
+        // future ChatItem case used to. None of them is the conversation, so each degrades to its default and names
+        // itself instead. The read order matches Swift's, so `unreadableFields` compares directly across platforms.
+        val lost = mutableListOf<String>()
+        fun <T> tolerant(name: String, fallback: T, decode: () -> T): T =
+            runCatching(decode).getOrElse { lost.add(name); fallback }
+
+        val usage = tolerant("usage", null) {
+            present("usage")?.let { json.decodeFromJsonElement(UsageInfo.serializer(), it) }
         }
-        return ChatTranscript(version, items, usage, plan, title, participants)
+        val plan = tolerant("plan", emptyList()) {
+            present("plan")?.let { json.decodeFromJsonElement(ListSerializer(PlanEntry.serializer()), it) } ?: emptyList()
+        }
+        // Decoded through the String serializer rather than read off the primitive: Swift's decodeIfPresent(String)
+        // throws on a title that is present but not a string, and a tolerated surface must be tolerated the same way
+        // on both platforms rather than silently stringifying a number.
+        val title = tolerant("title", null) {
+            present("title")?.let { json.decodeFromJsonElement(String.serializer(), it) }
+        }
+        val participants = tolerant("participants", null) {
+            present("participants")?.let { json.decodeFromJsonElement(ListSerializer(Participant.serializer()), it) }
+        }
+        return ChatTranscript(version, lossy.items, usage, plan, title, participants).also {
+            it.unreadableItemCount = lossy.unreadableCount
+            it.unreadableFields = lost
+        }
+    }
+
+    /** The items of one decode, with however many of them had to be replaced by a placeholder. */
+    private data class LossyItems(val items: List<ChatItem>, val unreadableCount: Int)
+
+    /**
+     * Decodes `items` element by element, substituting a visible placeholder for any element that will not decode.
+     *
+     * Each element is attempted inside runCatching - the Kotlin form of the Swift wrapper whose `init(from:)` cannot
+     * throw - because the failure is not always a SerializationException: a non-object element fails on `jsonObject`
+     * with a plain IllegalArgumentException, and every element must cost EXACTLY ONE SLOT or the items after it shift
+     * and the conversation silently reorders.
+     *
+     * A PLACEHOLDER'S ID MUST COLLIDE WITH NOTHING, so it is positional and then disambiguated against every id in
+     * the transcript. Adopting the id off the unreadable element is the tempting branch and the dangerous one: only
+     * image / system / error carry `id` at the top level of an item, so in practice a probed id means the element was
+     * an ENVELOPE - the shape a host is handed to persist, `id` and all - and a host restoring one by mistake would
+     * hand the placeholder a real message's id. Since every mutation path finds items by id, that live turn's status
+     * updates would land on the placeholder and be silently dropped.
+     */
+    private fun decodeItemsLossily(json: Json, array: JsonArray): LossyItems {
+        val attempted = array.map { element ->
+            runCatching { json.decodeFromJsonElement(ChatItemSerializer, element) }.getOrNull()
+        }
+        val taken = attempted.mapNotNullTo(mutableSetOf()) { it?.id }
+        val items = ArrayList<ChatItem>(array.size)
+        var unreadable = 0
+        attempted.forEachIndexed { index, decoded ->
+            if (decoded != null) {
+                items.add(decoded)
+                return@forEachIndexed
+            }
+            unreadable += 1
+            var id = "unreadable-item-$index"
+            var bump = 0
+            while (id in taken) {
+                bump += 1
+                id = "unreadable-item-$index-$bump"
+            }
+            taken.add(id)
+            // The one field worth recovering: enough to NAME what was unreadable, which is a bug report the reader
+            // can paste. A `type` that is absent, null, or not a string leaves nothing to name - Swift's probe
+            // decodes it as String? and fails the same way - so the message says so rather than inventing one.
+            val type = (array[index] as? JsonObject)?.get("type")
+                ?.let { it as? JsonPrimitive }
+                ?.takeIf { it.isString }
+                ?.content
+            val text = if (type != null) {
+                "This entry could not be read (type \"$type\")."
+            } else {
+                "This entry could not be read (no type given)."
+            }
+            items.add(ChatItem.Error(id = id, text = text))
+        }
+        return LossyItems(items, unreadable)
     }
 }
 

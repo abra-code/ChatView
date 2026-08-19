@@ -32,10 +32,15 @@ The nested objects inside events and transcripts use the model's own JSON vocabu
   to `[]` and is encoded ONLY when non-empty; `participants` is omitted when nil. `usage` / `title`
   are omitted when nil.
 - `ChatItem` uses a `type` discriminator with the exact strings: `message`, `thought`, `toolCall`,
-  `image`, `system`, `error`, `memberEvent`, `callEvent`, `file`. The payload lives under a key
-  named for the case (`message`, `toolCall`, `memberEvent`, `callEvent`, `file`, `image`) except
-  `system` / `error`, which inline `id` + `text`, and `image`, which inlines `id` + `role` beside
-  its `image` object.
+  `image`, `system`, `error`, `memberEvent`, `callEvent`, `file`, `sessionEvent`. The payload lives
+  under a key named for the case (`message`, `toolCall`, `memberEvent`, `callEvent`, `file`,
+  `image`, `sessionEvent`) except `system` / `error`, which inline `id` + `text`, and `image`, which
+  inlines `id` + `role` beside its `image` object.
+- `SessionDigest` is the one object whose ARRAYS ARE REQUIRED. `establishedFacts`, `decisions`,
+  `openThreads` and `userPreferences` are non-optional in Swift, so they are written always - empty
+  when empty - and demanded on decode; `summarizer`, `droppedTurns`, `verbatimTurns` and
+  `unresolvedIntent` are ordinary optionals and are omitted when nil. A port that omits an empty
+  array emits documents the Apple decoder rejects, and rejecting a digest rejects the item.
 - Enum raw values are the wire strings: `ToolCallModel.Status.inProgress` -> `"in_progress"`,
   `PlanEntry.Status.inProgress` -> `"in_progress"`, `PermissionRequest.Option.Kind` -> the
   `allow_once` / `allow_always` / `reject_once` / `reject_always` forms. All other enums use their
@@ -51,6 +56,26 @@ Each is a single serialized `ChatTranscript`.
 | `transcript-v2-people.json` | A real `ChatStore` driven through the real `LocalP2PTransport` (`scenario: people`, `stepMs: 0`), then snapshotted: the seeded 1:1 conversation (timestamps, a reaction, a read/delivered ladder, an edit, a file, a voice message) plus the two-person roster. |
 | `transcript-v2-group.json` | Same, `scenario: group`: adds a join member event, a missed video call, a rename member event, and the four-person roster. |
 | `transcript-mixed-agentic.json` | A hand-built transcript exercising EVERY `ChatItem` case (message, thought, toolCall with `diff` + `rawInput` + `rawOutput`, image, system, error, memberEvent, callEvent, file), plus `usage`, `plan`, `title`, and `participants`. The Tier-2 pass-through gate. |
+| `transcript-session-event.json` | Session markers: all three `kind`s (`started` / `resumed` / `modelChanged`), one with a full `SessionDigest`, one with a digest that is entirely empty (which pins "the four arrays are written even when empty"), and one with no digest at all. The macOS host writes these into every conversation it starts or resumes, so a reader that cannot decode one cannot open a current conversation. |
+
+## Lossy-decode parity pair
+
+`lossy-unreadable-items.json` is the one fixture whose INPUT is deliberately unreadable, and the one
+that is hand-written rather than emitted - no encoder produces these shapes on purpose. It carries an
+item with no `type` (the exact shape that cost a real user a conversation), a type from the future, a
+known type over an unreadable payload, a `type` that is an object rather than a string, elements that
+are not objects at all (a string, a number, a boolean, `null`, a nested array), and a real `system`
+item named like a placeholder.
+
+`lossy-unreadable-items.expected.json` is what a decoder must make of it, emitted by the Swift side:
+12 items in the original order, 9 of them replaced IN PLACE by an `error` row naming what could not be
+read, positional ids (`unreadable-item-<index>`, bumped to `unreadable-item-1-1` where a real item
+already holds the name), and a non-persisted unreadable-item count of 9. A single unreadable entry
+must cost one visible line, never the conversation.
+
+Both are outside the `transcript-*` prefix deliberately: the goldens under that prefix must re-encode
+to their own bytes, and this pair cannot - a placeholder encodes as an ordinary `error` row. That is
+also the reason a host must never persist a decoded transcript back over its source.
 
 ## Routing scenarios
 

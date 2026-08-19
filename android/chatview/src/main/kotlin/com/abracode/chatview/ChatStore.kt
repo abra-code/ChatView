@@ -908,6 +908,16 @@ internal class ChatStore(
      * permission / buffer state is cleared, and the status surfaces are restored.
      */
     private fun applyLoadedTranscript(transcript: ChatTranscript) {
+        // Both restore paths funnel through here, so this is the one place that sees every decode. The placeholder
+        // rows make the loss visible to the READER of the conversation; this makes it searchable for whoever has to
+        // work out why an entry is unreadable - and it is what stops a damaged restore looking like silence.
+        if (transcript.unreadableItemCount > 0) {
+            logger.log(
+                "Chat restored a transcript with ${transcript.unreadableItemCount} unreadable item(s); " +
+                    "each is shown in place as an error row",
+                ChatLogLevel.WARNING,
+            )
+        }
         val turnWasInFlight = isStreaming || awaitingReply
         _items.clear()
         _items.addAll(transcript.items)

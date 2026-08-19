@@ -141,6 +141,11 @@ internal fun DualTranscriptRow(ctx: DualRowContext, actions: DualRowActions, hig
                 compact = actions.config.surfaces.toolCalls == ChatConfiguration.SurfaceMode.COLLAPSED,
                 showsDiff = actions.config.surfaces.diffs != ChatConfiguration.SurfaceMode.HIDDEN,
             )
+            // DRAWS NOTHING YET, ON PURPOSE. Decoding a session marker is what stops one destroying a whole
+            // transcript, and that is this change; rendering it (Swift draws a centered caption, and an expandable
+            // digest in the agentic transcript) is its own piece of work. Until then the item survives a restore and
+            // round-trips untouched - it is invisible, not lost.
+            is ChatItem.SessionEventItem -> Unit
         }
     }
 }

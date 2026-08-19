@@ -7,11 +7,14 @@ package com.abracode.chatview
 // Deterministic (a fixed UTC zone).
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
+import com.abracode.chatview.ui.groupingSignature
+import com.abracode.chatview.ui.toLayoutInput
 import java.time.ZoneId
 
 class ChatTimestampTest {
@@ -129,5 +132,63 @@ class ChatTranscriptLayoutTest {
             listOf(ChatTranscriptLayout.Info(isFirstInRun = true, isLastInRun = true, startsNewDay = false)),
             one,
         )
+    }
+}
+
+/**
+ * The layout inputs the transcript actually builds from its items ([groupingSignature]), as opposed to the pure
+ * layout core above. One item type gets this wrong in a way the core cannot see: a row that reports a timestamp but
+ * draws nothing takes the day separator with it.
+ */
+class ChatGroupingSignatureTest {
+
+    private val utc: ZoneId = ZoneId.of("UTC")
+
+    private fun message(id: String, iso: String) = ChatItem.Message(
+        ChatMessage(id = id, role = ChatRole.REMOTE, text = id, isStreaming = false, senderID = "alex", timestamp = iso),
+    )
+
+    private fun layoutOf(items: List<ChatItem>): List<ChatTranscriptLayout.Info> =
+        ChatTranscriptLayout.layout(items.map { groupingSignature(it, emptyList()).toLayoutInput() }, zone = utc)
+
+    /**
+     * A SESSION MARKER CARRIES NO LAYOUT TIMESTAMP, mirroring Swift's nonGroupableTimestamp. The day separator is
+     * placed on the first TIMESTAMPED item of a new day; hand the marker a timestamp and the separator lands on a row
+     * that draws nothing (its row context has no timestamp either), so the day header vanishes from the conversation
+     * instead of appearing on the message below it.
+     */
+    @Test
+    fun aSessionMarkerDoesNotSwallowTheDaySeparator() {
+        val infos = layoutOf(listOf(
+            message("m0", "2026-07-10T23:50:00Z"),
+            ChatItem.SessionEventItem(
+                SessionEvent(id = "sess-1", kind = SessionEvent.Kind.RESUMED, timestamp = "2026-07-11T09:00:00Z"),
+            ),
+            message("m1", "2026-07-11T09:01:00Z"),
+        ))
+        assertEquals(
+            "the day header must land on the row that can draw it, not on the marker",
+            listOf(false, false, true),
+            infos.map { it.startsNewDay },
+        )
+    }
+
+    /**
+     * And it still breaks a run, like every other centered marker. The `groupable` flag is asserted DIRECTLY as
+     * well as through the layout: the marker's sender key is `system`, which matches no message's key, so the two
+     * messages could not merge across it even if the flag were wrong - the layout assertion alone would pass with
+     * the flag flipped and pin nothing.
+     */
+    @Test
+    fun aSessionMarkerBreaksTheRunAroundIt() {
+        val marker = ChatItem.SessionEventItem(SessionEvent(id = "sess-1", kind = SessionEvent.Kind.MODEL_CHANGED))
+        assertFalse("a marker is never groupable", groupingSignature(marker, emptyList()).groupable)
+        val infos = layoutOf(listOf(
+            message("m0", "2026-07-11T09:00:00Z"),
+            marker,
+            message("m1", "2026-07-11T09:00:30Z"),
+        ))
+        assertEquals(listOf(true, true, true), infos.map { it.isFirstInRun })
+        assertEquals(listOf(true, true, true), infos.map { it.isLastInRun })
     }
 }
