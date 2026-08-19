@@ -940,6 +940,32 @@ public struct ChatTranscript: Equatable, Sendable, Codable {
     }
 }
 
+public extension ChatItem {
+    /// Decodes ONE item from a host-supplied value, for the append channel. Accepts the same
+    /// shapes as `ChatTranscript.decode(from:)` so a host can hand over a JSON string, Data, or a
+    /// dictionary without knowing which the bridge it crossed produced.
+    static func decode(from value: Any?) -> ChatItem? {
+        if let item = value as? ChatItem {
+            return item
+        }
+        let data: Data?
+        switch value {
+        case let string as String:
+            data = string.data(using: .utf8)
+        case let raw as Data:
+            data = raw
+        case let object as [String: Any]:
+            data = try? JSONSerialization.data(withJSONObject: object)
+        default:
+            data = nil
+        }
+        guard let data else {
+            return nil
+        }
+        return try? JSONDecoder().decode(ChatItem.self, from: data)
+    }
+}
+
 /// A `reportsConnectionState` transport's link state, emitted via `.connectionStateChanged`.
 /// The composer gates on `connected`; every other state disables it (with a one-line banner).
 /// A transport that never reports leaves the composer un-gated.

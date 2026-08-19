@@ -34,6 +34,27 @@ public protocol ChatContentSource: AnyObject {
     /// Observes the operational-config channel - the host-injected config (protocol + transport) -
     /// with the same current-value-on-subscription-and-on-change semantics. Cancel to stop.
     func observeChatConfig(_ handler: @escaping (Any?) -> Void) -> AnyCancellable
+    /// Observes the single-item append channel: one `ChatItem` JSON at a time, added to the END of
+    /// the live transcript without replacing it.
+    ///
+    /// This exists because the content channel is all-or-nothing. Restoring through it replaces
+    /// `items` wholesale and re-primes the agent, so a host that wants to add ONE line to a
+    /// conversation already on screen - a session marker saying which model is about to answer -
+    /// had to choose between not showing it until the next load and re-priming the whole
+    /// conversation to show it.
+    ///
+    /// LIKE THE CONTENT CHANNEL, THIS DOES NOT FIRE AN ENTRY. Both are the host saying "here is
+    /// something you already have"; persistence flows the other way, and a host that appends an
+    /// item it just wrote to its own store would otherwise get it back and write it twice.
+    ///
+    /// Defaulted to a channel that never delivers, so existing hosts compile unchanged.
+    func observeChatAppend(_ handler: @escaping (Any?) -> Void) -> AnyCancellable
+}
+
+public extension ChatContentSource {
+    func observeChatAppend(_ handler: @escaping (Any?) -> Void) -> AnyCancellable {
+        AnyCancellable {}
+    }
 }
 
 /// The transient restore directive riding on injected content JSON (the `"prime"` key):
@@ -126,6 +147,14 @@ final class ChatStore: ObservableObject {
     private weak var contentSource: (any ChatContentSource)?
     private var lastLoadedContent: ChatTranscript?
     private var contentCancellable: AnyCancellable?
+    private var appendCancellable: AnyCancellable?
+    // The ids appended through the append channel, so the subscription's immediate delivery of a
+    // value already applied (a reappearance re-subscribes) does not double it.
+    private var appendedItemIDs: Set<String> = []
+    // The last value each channel rejected, so a re-delivered bad value warns once rather than
+    // once per unrelated state change.
+    private var lastRejectedAppend: String?
+    private var lastRejectedContent: String?
     private var entrySequence = 0
     // Transient restore directive riding on the injected content JSON (not part of the
     // ChatTranscript persistence codec): "prime": false displays the transcript but seeds the
@@ -260,6 +289,15 @@ final class ChatStore: ObservableObject {
         if contentCancellable == nil, let contentSource {
             contentCancellable = contentSource.observeChatContent { [weak self] newContent in
                 self?.reconcileRestoredContent(newContent)
+            }
+        }
+
+        // The single-item append channel. Subscribed even in readOnly: a history viewer showing a
+        // conversation is exactly where a marker naming what happened to it belongs, and appending
+        // touches no transport.
+        if appendCancellable == nil, let contentSource {
+            appendCancellable = contentSource.observeChatAppend { [weak self] value in
+                self?.reconcileAppendedItem(value)
             }
         }
 
@@ -687,6 +725,8 @@ final class ChatStore: ObservableObject {
         eventTask = nil
         contentCancellable?.cancel()
         contentCancellable = nil
+        appendCancellable?.cancel()
+        appendCancellable = nil
         configCancellable?.cancel()
         configCancellable = nil
         streamBuffers.removeAll()
@@ -721,7 +761,13 @@ final class ChatStore: ObservableObject {
             // transcript keeps the record of what its model was actually given, so reopening the
             // conversation tomorrow still answers "what was summarized away here".
             items.append(.sessionEvent(event))
-            fireEntry(type: "sessionEvent", id: event.id, data: event)
+            // ChatItem.sessionEvent(event), NOT the bare event. `data` is the persisted ChatItem,
+            // and every other case here wraps; this one did not, so the entry went out with the
+            // payload at the top level and no `type` discriminator. A host that stored it verbatim
+            // and restored it later handed ChatItem's decoder an object with no `type`: it throws,
+            // ChatTranscript decodes `items` as one array, and the WHOLE conversation fails to
+            // decode. What this element wrote, it could not read back.
+            fireEntry(type: "sessionEvent", id: event.id, data: ChatItem.sessionEvent(event))
 
         case .sessionInfo(let info):
             sessionInfo = info
@@ -972,6 +1018,70 @@ final class ChatStore: ObservableObject {
         }
     }
 
+    /// True for the values the content channel uses to mean "nothing here" - worth distinguishing
+    /// from a malformed transcript, which is worth a warning.
+    private static func isEmptyContent(_ value: Any?) -> Bool {
+        guard let value else { return true }
+        if value is NSNull { return true }
+        if let string = value as? String {
+            return string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        if let data = value as? Data { return data.isEmpty }
+        return false
+    }
+
+    /// Appends ONE host-supplied item to the live transcript. Internal so tests can drive it
+    /// directly, exactly as the append subscription does.
+    ///
+    /// It fires no entry (the host already has this item - see `observeChatAppend`) and does not
+    /// re-prime. It is NOT otherwise a shortcut: it replays the same id and read-mark bookkeeping
+    /// the other three ways into `items` perform.
+    ///
+    /// A marker leaves the context indicator alone, because `wireEntries` is built from `.message`
+    /// items. That is exactly why appending a MESSAGE does not: it moves `wireEntries` while
+    /// `wireContext` stays put, so the context is marked pending and the next send re-primes.
+    func reconcileAppendedItem(_ value: Any?) {
+        guard let item = ChatItem.decode(from: value) else {
+            // Warn ONCE per distinct bad value. The host bridge re-delivers this channel on every
+            // change to the whole state dictionary, so an unchanged rejected value would otherwise
+            // log once per keystroke and bury the diagnostic it exists to provide.
+            let description = String(describing: value)
+            if !Self.isEmptyContent(value), description != lastRejectedAppend {
+                lastRejectedAppend = description
+                logger.log("Chat append channel delivered a value that is not a decodable item; "
+                           + "it was ignored", .warning)
+            }
+            return
+        }
+        lastRejectedAppend = nil
+        // The channel delivers its current value on subscription, so a reappearance re-delivers the
+        // last item appended. Dedup on id rather than on the item, so a host that re-sends a
+        // corrected version of the same marker is also a no-op rather than a duplicate line.
+        guard !appendedItemIDs.contains(item.id), !items.contains(where: { $0.id == item.id }) else {
+            return
+        }
+        appendedItemIDs.insert(item.id)
+        items.append(item)
+        // This is the fourth way items enter the store, and the other three replay these invariants.
+        // Skipping them is how an appended item collides with one the store is about to mint: the
+        // ids handed to a host by fireEntry are the store's own (`user-N`), so a host replaying one
+        // of its saved items through this channel reuses that shape by construction, and every
+        // mutation path looks items up with `firstIndex`.
+        advanceLocalCounter(past: [item])
+        transport?.reserveIDs(seen: [item.id])
+        maybeScheduleReadMark()
+        // AND THE CONTEXT MAY NOW BE STALE. `wireEntries` is built from `.message` items, so a
+        // marker changes nothing - but this channel accepts any ChatItem, and appending a message
+        // moves the transcript ahead of what the agent holds. Left unsaid, the model answers
+        // without ever seeing a line the user is reading, the indicator keeps claiming synced, and
+        // trackContextAfterTurn adopts the unsent message as held at the end of the next turn -
+        // after which nothing can tell it was ever wrong. Saying `pending` costs one re-prime on
+        // the next send, which is exactly what the deferred path already does.
+        if transport != nil, Self.wireEntries(from: items) != wireContext {
+            contextState = .pending
+        }
+    }
+
     // MARK: - Session transcript seam: restore-in + incremental per-entry persistence
 
     /// Handles a transcript a host restored through the content channel (in an ActionUI host:
@@ -980,6 +1090,18 @@ final class ChatStore: ObservableObject {
     /// session. Internal so tests can drive a restore directly (as the content subscription does).
     func reconcileRestoredContent(_ newContent: Any?) {
         guard let transcript = ChatTranscript.decode(from: newContent) else {
+            // A restore that will not decode is indistinguishable from no restore at all without
+            // this line, and that silence is expensive: ChatItem's decoder throws on an item whose
+            // `type` it does not recognize, ChatTranscript decodes `items` as a single array, and
+            // `decode(from:)` swallows the throw with `try?`. ONE bad item therefore drops a whole
+            // conversation, and the window just keeps showing whatever it had - no error, no
+            // change, nothing to search for. Nil is the ordinary empty channel and stays quiet.
+            let description = String(describing: newContent)
+            if !Self.isEmptyContent(newContent), description != lastRejectedContent {
+                lastRejectedContent = description
+                logger.log("Chat content channel delivered a value that is not a decodable "
+                           + "transcript; the restore was ignored", .warning)
+            }
             return
         }
         // The transient "prime" directive rides on the raw injected JSON (Codable drops the
@@ -1075,6 +1197,10 @@ final class ChatStore: ObservableObject {
         // A restored session supersedes any read-mark / typing state.
         lastReadMarkItemID = nil
         typingParticipants.removeAll()
+        // The append dedup describes the items that were just replaced, so it stops describing
+        // anything. Left in place it outlives them forever and silently swallows a legitimate
+        // re-append of the same id into the new transcript.
+        appendedItemIDs.removeAll()
         // Advance the id counter past any store-generated ids in the loaded transcript, so a
         // subsequent user/system/error item cannot collide with a loaded one.
         advanceLocalCounter(past: transcript.items)

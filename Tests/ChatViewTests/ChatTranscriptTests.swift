@@ -248,8 +248,12 @@ private final class FakeContentSource: ChatContentSource {
     var config: Any? {
         didSet { configObservers.values.forEach { $0(config) } }
     }
+    var appended: Any? {
+        didSet { appendObservers.values.forEach { $0(appended) } }
+    }
     private var contentObservers: [Int: (Any?) -> Void] = [:]
     private var configObservers: [Int: (Any?) -> Void] = [:]
+    private var appendObservers: [Int: (Any?) -> Void] = [:]
     private var nextID = 0
 
     init(seed: Any? = nil, config: Any? = nil) {
@@ -271,6 +275,14 @@ private final class FakeContentSource: ChatContentSource {
         configObservers[id] = handler
         handler(config)
         return AnyCancellable { MainActor.assumeIsolated { self.configObservers[id] = nil } }
+    }
+
+    func observeChatAppend(_ handler: @escaping (Any?) -> Void) -> AnyCancellable {
+        nextID += 1
+        let id = nextID
+        appendObservers[id] = handler
+        handler(appended)   // immediate current-value delivery, like the other two
+        return AnyCancellable { MainActor.assumeIsolated { self.appendObservers[id] = nil } }
     }
 }
 
@@ -380,5 +392,293 @@ final class ChatContentRestoreTests: XCTestCase {
         XCTAssertTrue(toolJSONs.last?.contains("final output") == true, "the latest entry captures the final output (upsert by id)")
         // The pending update did NOT fire an entry.
         XCTAssertEqual(sink.rawJSONs().count, 2, "only the two terminal updates fire; the pending one does not")
+    }
+}
+
+// MARK: - The entry a host persists must be the item it can restore
+
+@MainActor
+final class ChatSessionEventRoundTripTests: XCTestCase {
+
+    /// THE REGRESSION THIS GUARDS COST A WHOLE CONVERSATION. `.sessionEvent` was the only case that
+    /// handed `fireEntry` the bare payload instead of the ChatItem, so the persisted entry had no
+    /// `type` discriminator. ChatItem's decoder throws on that, ChatTranscript decodes `items` as a
+    /// single array, and `ChatTranscript.decode(from:)` swallows the throw with `try?` - so the host
+    /// restored nothing, silently, and the conversation could not be reopened.
+    ///
+    /// Asserting the entry "looks right" would not have caught it. This round-trips: persist what
+    /// the element emits, restore it, and require the item back.
+    func testSessionEventEntryRoundTripsThroughATranscript() throws {
+        let sink = EntrySink()
+        let logger = HistoryTestLogger()
+        var configuration = ChatConfiguration(dictionary: [:], logger: logger)
+        configuration.emitsEntryEvents = true
+        let store = ChatStore(config: configuration, logger: logger, hostEvents: { event in
+            if case .entry(let json) = event { sink.add(json) }
+        })
+
+        let digest = SessionDigest(summarizer: "apple-foundation-models", droppedTurns: 4,
+                                   verbatimTurns: 6, unresolvedIntent: "i",
+                                   establishedFacts: ["f"], decisions: ["d"], openThreads: [],
+                                   userPreferences: [])
+        store.route(.sessionEvent(SessionEvent(id: "c1", kind: .resumed,
+                                               timestamp: "2026-08-18T21:56:33Z",
+                                               model: "gemma", digest: digest)))
+
+        let entry = try XCTUnwrap(sink.rawJSONs().last)
+        let envelope = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(entry.utf8)) as? [String: Any])
+        let data = try XCTUnwrap(envelope["data"] as? [String: Any])
+
+        // The half that was broken: `data` IS a ChatItem, discriminator and all.
+        XCTAssertEqual(data["type"] as? String, "sessionEvent")
+        XCTAssertNotNil(data["sessionEvent"], "the payload must sit under the case key")
+
+        // The half that matters: a host that stored this can restore it.
+        let restored = try XCTUnwrap(
+            ChatTranscript.decode(from: ["version": 1, "items": [data]] as [String: Any]),
+            "a transcript built from the emitted entry must decode - one item that does not takes "
+                + "the whole conversation with it")
+        XCTAssertEqual(restored.items.count, 1)
+        guard let first = restored.items.first, case .sessionEvent(let event) = first else {
+            return XCTFail("expected the item back as a sessionEvent")
+        }
+        XCTAssertEqual(event.kind, .resumed)
+        XCTAssertEqual(event.model, "gemma")
+        XCTAssertEqual(event.digest?.droppedTurns, 4)
+    }
+}
+
+// MARK: - The append channel: one item onto a live transcript
+
+@MainActor
+final class ChatAppendChannelTests: XCTestCase {
+
+    private func marker(_ id: String, kind: String = "resumed",
+                        model: String = "Qwen3 4B") -> [String: Any] {
+        ["type": "sessionEvent",
+         "sessionEvent": ["id": id, "kind": kind, "model": model,
+                          "timestamp": "2026-08-18T21:56:33Z"] as [String: Any]]
+    }
+
+    private func makeStore(source: FakeContentSource) -> ChatStore {
+        let logger = HistoryTestLogger()
+        let configuration = ChatConfiguration(dictionary: [:], logger: logger)
+        let store = ChatStore(config: configuration, logger: logger, contentSource: source)
+        store.start()
+        return store
+    }
+
+    func testAppendAddsOneItemWithoutReplacingTheTranscript() throws {
+        let source = FakeContentSource(seed: [
+            "version": 1,
+            "items": [["type": "message",
+                       "message": ["id": "m1", "role": "local", "text": "hi"]] as [String: Any]],
+        ] as [String: Any])
+        let store = makeStore(source: source)
+        XCTAssertEqual(store.items.count, 1)
+
+        source.appended = marker("se-1")
+
+        XCTAssertEqual(store.items.count, 2, "the appended item must be added, not replace")
+        XCTAssertEqual(store.items.first?.id, "m1", "the conversation already shown must survive")
+        guard let last = store.items.last, case .sessionEvent(let event) = last else {
+            return XCTFail("expected the appended marker")
+        }
+        XCTAssertEqual(event.model, "Qwen3 4B")
+    }
+
+    /// The channel re-delivers its current value to a new subscriber, and a view that disappears and
+    /// comes back re-subscribes. Without the dedup that is a second marker every time.
+    func testReDeliveryOfTheSameItemIsIgnored() {
+        let source = FakeContentSource()
+        let store = makeStore(source: source)
+        source.appended = marker("se-1")
+        XCTAssertEqual(store.items.count, 1)
+        source.appended = marker("se-1", model: "a different label")
+        XCTAssertEqual(store.items.count, 1, "the same id must not append twice")
+        source.appended = marker("se-2")
+        XCTAssertEqual(store.items.count, 2, "a genuinely new marker still appends")
+    }
+
+    func testAppendingAnItemAlreadyInTheTranscriptIsIgnored() {
+        let source = FakeContentSource(seed: [
+            "version": 1,
+            "items": [["type": "sessionEvent",
+                       "sessionEvent": ["id": "se-1", "kind": "resumed"]] as [String: Any]],
+        ] as [String: Any])
+        let store = makeStore(source: source)
+        XCTAssertEqual(store.items.count, 1)
+        source.appended = marker("se-1")
+        XCTAssertEqual(store.items.count, 1, "a restore that already carried it wins")
+    }
+
+    /// The dedup describes the items on screen. A wholesale restore replaces them, so the set stops
+    /// describing anything - and left in place it outlives them forever, silently swallowing a
+    /// legitimate re-announcement of the same marker into the new transcript.
+    func testARestoreClearsTheDedupSoTheSameMarkerCanReturn() {
+        let source = FakeContentSource()
+        let store = makeStore(source: source)
+        source.appended = marker("se-1")
+        XCTAssertEqual(store.items.count, 1)
+
+        source.content = [
+            "version": 1,
+            "items": [["type": "message",
+                       "message": ["id": "m0", "role": "local", "text": "hi"]] as [String: Any]],
+        ] as [String: Any]
+        XCTAssertEqual(store.items.map(\.id), ["m0"], "the restore replaces what was appended")
+
+        source.appended = marker("se-1")
+        XCTAssertEqual(store.items.map(\.id), ["m0", "se-1"],
+                       "the same id must be appendable again once its items are gone")
+    }
+
+    func testMalformedAppendIsIgnoredRatherThanCrashingOrClearing() {
+        let source = FakeContentSource(seed: [
+            "version": 1,
+            "items": [["type": "message",
+                       "message": ["id": "m1", "role": "local", "text": "hi"]] as [String: Any]],
+        ] as [String: Any])
+        let store = makeStore(source: source)
+        source.appended = ["type": "notAnItemType"] as [String: Any]
+        XCTAssertEqual(store.items.count, 1, "an undecodable append must leave the transcript alone")
+        source.appended = "   "
+        XCTAssertEqual(store.items.count, 1)
+    }
+
+}
+
+/// The context-state half of the append channel, which needs a REAL transport: `contextState` is
+/// only ever written by code paths that begin `guard let transport`. An earlier version of these
+/// tests used a store with no transport and asserted the indicator was unchanged - it could not
+/// have failed, because nothing in the process could write it.
+@MainActor
+final class ChatAppendContextStateTests: XCTestCase {
+
+    private func primedStore() -> (ChatStore, AppendRecordingTransport, AppendConfigSource) {
+        let name = "append-test-\(UUID().uuidString)"
+        let box = AppendTransportBox()
+        ChatTransportRegistry.shared.register(name) { _, _ in
+            let t = AppendRecordingTransport()
+            box.transport = t
+            return t
+        }
+        let logger = HistoryTestLogger()
+        let source = AppendConfigSource(config: ["protocol": name])
+        let store = ChatStore(config: ChatConfiguration(dictionary: [:], logger: logger),
+                              logger: logger, contentSource: source)
+        store.start()
+        return (store, box.transport!, source)
+    }
+
+    private func restoreTwoMessages(_ source: AppendConfigSource) {
+        source.content = [
+            "version": 1,
+            "items": [["type": "message",
+                       "message": ["id": "m0", "role": "local", "text": "hello"]] as [String: Any],
+                      ["type": "message",
+                       "message": ["id": "m1", "role": "agent", "text": "hi"]] as [String: Any]],
+        ] as [String: Any]
+    }
+
+    /// The premise the whole design rests on: a marker contributes no wire entry, so the agent's
+    /// context is still an accurate description of the conversation.
+    func testAppendingAMarkerLeavesTheContextSynced() {
+        let (store, transport, source) = primedStore()
+        restoreTwoMessages(source)
+        let primesBefore = transport.primeCount
+        XCTAssertEqual(store.contextState, .synced)
+
+        source.appended = ["type": "sessionEvent",
+                           "sessionEvent": ["id": "se-1", "kind": "resumed",
+                                            "model": "Qwen3 4B"] as [String: Any]]
+
+        XCTAssertEqual(store.contextState, .synced,
+                       "a marker adds no wire entry, so the agent still holds the conversation")
+        XCTAssertEqual(transport.primeCount, primesBefore,
+                       "and appending must not re-prime - that is the cost this channel avoids")
+    }
+
+    /// Appending is the fourth way an item enters the store, and the other three reserve its id.
+    /// Skipping that lets an appended item collide with one the store is about to mint - and every
+    /// mutation path finds items by `firstIndex`, so a collision misdirects a live turn's deltas.
+    func testAppendReservesTheItemIdWithTheTransport() {
+        // Bind the store: nothing else retains it (the content source holds it only through weak
+        // closures), so discarding it here releases it and the append never happens.
+        let (store, transport, source) = primedStore()
+        restoreTwoMessages(source)
+        source.appended = ["type": "sessionEvent",
+                           "sessionEvent": ["id": "se-9", "kind": "resumed"] as [String: Any]]
+        XCTAssertTrue(transport.reserved.contains("se-9"),
+                      "the appended id must be reserved, or the transport may mint it again")
+        XCTAssertEqual(store.items.count, 3)
+    }
+
+    /// The case the channel's type permits and the design must not lie about. Appending a message
+    /// puts a line on screen the model was never given; if the indicator kept saying synced, the
+    /// next send would not re-prime and the turn end would adopt the unsent message as held.
+    func testAppendingAMessageMarksTheContextPending() {
+        let (store, _, source) = primedStore()
+        restoreTwoMessages(source)
+        XCTAssertEqual(store.contextState, .synced)
+
+        source.appended = ["type": "message",
+                           "message": ["id": "h1", "role": "agent",
+                                       "text": "never sent"] as [String: Any]]
+
+        XCTAssertEqual(store.contextState, .pending,
+                       "a message the agent was never given must not be reported as held")
+    }
+}
+
+private final class AppendRecordingTransport: ChatTransport, @unchecked Sendable {
+    let events: AsyncStream<ChatEvent>
+    private let continuation: AsyncStream<ChatEvent>.Continuation
+    private let lock = NSLock()
+    private var _primes = 0
+    private var _reserved: [String] = []
+    var primeCount: Int { lock.withLock { _primes } }
+    var reserved: [String] { lock.withLock { _reserved } }
+    init() {
+        var captured: AsyncStream<ChatEvent>.Continuation!
+        self.events = AsyncStream { captured = $0 }
+        self.continuation = captured
+    }
+    func start() async {}
+    func send(_ command: ChatCommand) async {}
+    func stop() async { continuation.finish() }
+    func primeHistory(_ messages: [ChatMessage]) { lock.withLock { _primes += 1 } }
+    func reserveIDs(seen ids: [String]) { lock.withLock { _reserved.append(contentsOf: ids) } }
+}
+
+private final class AppendTransportBox: @unchecked Sendable {
+    var transport: AppendRecordingTransport?
+}
+
+/// The store holds its content source WEAKLY, so a test must keep this alive across start().
+private final class AppendConfigSource: ChatContentSource {
+    var content: Any? { didSet { contentObservers.values.forEach { $0(content) } } }
+    var config: Any? { didSet { configObservers.values.forEach { $0(config) } } }
+    var appended: Any? { didSet { appendObservers.values.forEach { $0(appended) } } }
+    private var contentObservers: [Int: (Any?) -> Void] = [:]
+    private var configObservers: [Int: (Any?) -> Void] = [:]
+    private var appendObservers: [Int: (Any?) -> Void] = [:]
+    private var nextID = 0
+    init(config: Any? = nil) { self.config = config }
+    func observeChatContent(_ handler: @escaping (Any?) -> Void) -> AnyCancellable {
+        nextID += 1; let id = nextID
+        contentObservers[id] = handler; handler(content)
+        return AnyCancellable { MainActor.assumeIsolated { self.contentObservers[id] = nil } }
+    }
+    func observeChatConfig(_ handler: @escaping (Any?) -> Void) -> AnyCancellable {
+        nextID += 1; let id = nextID
+        configObservers[id] = handler; handler(config)
+        return AnyCancellable { MainActor.assumeIsolated { self.configObservers[id] = nil } }
+    }
+    func observeChatAppend(_ handler: @escaping (Any?) -> Void) -> AnyCancellable {
+        nextID += 1; let id = nextID
+        appendObservers[id] = handler; handler(appended)
+        return AnyCancellable { MainActor.assumeIsolated { self.appendObservers[id] = nil } }
     }
 }
