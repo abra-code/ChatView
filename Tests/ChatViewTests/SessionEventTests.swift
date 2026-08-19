@@ -96,4 +96,48 @@ final class SessionEventTests: XCTestCase {
             SessionEvent(id: "se-1", kind: .resumed, timestamp: "not-a-date", model: "Qwen3 4B"))
         XCTAssertEqual(caption, "Resumed with Qwen3 4B")
     }
+
+    // MARK: - The two-line split
+
+    /// The marker stacks the stamp under the sentence, so the break has to fall between them and
+    /// nowhere else: a headline carrying the date would wrap mid-model-name again.
+    func testTheStampSplitsOffTheHeadline() throws {
+        let lines = SessionEventText.lines(
+            SessionEvent(id: "se-1", kind: .resumed,
+                         timestamp: "2026-08-17T15:42:00Z", model: "gemma-4-31B-it-UD-Q4_K_XL"))
+        XCTAssertEqual(lines.headline, "Resumed with gemma-4-31B-it-UD-Q4_K_XL")
+        XCTAssertFalse(lines.headline.contains("2026"), lines.headline)
+        // The formatted stamp is locale-dependent, so pin what it is NOT: the wire string. A
+        // `stamp` that handed back its input would otherwise satisfy every other assertion here.
+        let stamp = try XCTUnwrap(lines.timestamp)
+        XCTAssertFalse(stamp.contains("T15:42:00Z"), stamp)
+    }
+
+    /// No stamp means no second line at all rather than an empty one - a blank row under the
+    /// sentence reads as a rendering bug.
+    func testAMissingStampLeavesNoSecondLine() {
+        let lines = SessionEventText.lines(SessionEvent(id: "se-1", kind: .started, model: "Qwen3 4B"))
+        XCTAssertEqual(lines.headline, "Started with Qwen3 4B")
+        XCTAssertNil(lines.timestamp)
+        XCTAssertEqual(lines.joined, "Started with Qwen3 4B")
+    }
+
+    /// The digest branch is the one that was restructured - the stamp used to be appended
+    /// inside it - so its split is the one that could regress in silence. The headline carries
+    /// the size and the summarizer; the time still leaves for the second line.
+    func testADigestHeadlineAlsoSplitsOffTheStamp() {
+        let lines = SessionEventText.lines(
+            SessionEvent(id: "c", kind: .resumed, timestamp: "2026-08-17T15:42:00Z"),
+            digest: SessionDigest(summarizer: "Qwen3 4B", droppedTurns: 64))
+        XCTAssertEqual(lines.headline, "Resumed - 64 earlier messages summarized by Qwen3 4B")
+        XCTAssertNotNil(lines.timestamp)
+    }
+
+    /// The spoken label and the printed marker come from the same composition: VoiceOver reads
+    /// `joined`, the view stacks the halves. Asserted against the literal sentence rather than
+    /// against `caption`, which is DEFINED as `joined` and so could only assert an identity.
+    func testTheJoinedLineIsTheWholeSentence() {
+        let event = SessionEvent(id: "se-1", kind: .modelChanged, model: "Llama 3.1 8B")
+        XCTAssertEqual(SessionEventText.lines(event).joined, "Switched to Llama 3.1 8B")
+    }
 }

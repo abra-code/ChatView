@@ -121,14 +121,32 @@ struct DualTranscriptRow: View {
 /// from what is present rather than filling a sentence template, which would otherwise read as
 /// "Resumed with  " on the commonest case of all.
 enum SessionEventText {
-    /// The plain boundary caption.
-    static func caption(_ event: SessionEvent) -> String { caption(event, digest: nil) }
+    /// A boundary caption in its two halves: WHAT happened, and WHEN.
+    ///
+    /// Split because the two answer different questions and one long line answering both wraps
+    /// wherever the window happens to end - mid-model-name as often as not. Stacking them puts
+    /// the break where the meaning already is.
+    struct Lines {
+        /// The verb and its subject: "Resumed with gemma-4-31B", "Switched to Llama 3.1 8B".
+        let headline: String
+        /// The formatted stamp, absent when the host did not send one or it would not parse.
+        let timestamp: String?
 
-    /// With a digest, the caption also has to carry the SIZE of what was replaced and WHO wrote
+        /// The two halves as one line, for accessibility and for the single-line P2P caption.
+        var joined: String { [headline, timestamp].compactMap { $0 }.joined(separator: " ") }
+    }
+
+    /// The boundary caption as one line. Composed from `lines` rather than built separately,
+    /// so the stacked marker and the spoken one can never drift apart.
+    static func caption(_ event: SessionEvent, digest: SessionDigest? = nil) -> String {
+        lines(event, digest: digest).joined
+    }
+
+    /// With a digest, the headline also has to carry the SIZE of what was replaced and WHO wrote
     /// the replacement - "64 messages summarized" is the fact a reader needs to judge whether to
     /// go looking, and the summarizing model is how they judge how much to trust it. A 3B
     /// on-device summary and a 32k local-model summary deserve different levels of suspicion.
-    static func caption(_ event: SessionEvent, digest: SessionDigest?) -> String {
+    static func lines(_ event: SessionEvent, digest: SessionDigest? = nil) -> Lines {
         var parts: [String] = [verb(event.kind)]
         if let digest {
             if let dropped = digest.droppedTurns {
@@ -139,18 +157,17 @@ enum SessionEventText {
             if let by = digest.summarizer, !by.isEmpty {
                 parts.append("by \(by)")
             }
-            if let stamp = event.timestamp, let date = ChatTimestamp.parse(stamp) {
-                parts.append(formatter.string(from: date))
-            }
-            return parts.joined(separator: " ")
-        }
-        if let model = event.model, !model.isEmpty {
+        } else if let model = event.model, !model.isEmpty {
             parts.append(event.kind == .modelChanged ? "to \(model)" : "with \(model)")
         }
-        if let stamp = event.timestamp, let date = ChatTimestamp.parse(stamp) {
-            parts.append(formatter.string(from: date))
-        }
-        return parts.joined(separator: " ")
+        return Lines(headline: parts.joined(separator: " "), timestamp: stamp(event))
+    }
+
+    /// An unparseable stamp is dropped rather than printed raw: a marker reading
+    /// "Resumed with X not-a-date" is worse than one that simply does not say when.
+    private static func stamp(_ event: SessionEvent) -> String? {
+        guard let stamp = event.timestamp, let date = ChatTimestamp.parse(stamp) else { return nil }
+        return formatter.string(from: date)
     }
 
     private static func verb(_ kind: SessionEvent.Kind) -> String {

@@ -1161,36 +1161,68 @@ private struct SessionEventRow: View {
                 DigestBody(digest: digest)
                     .padding(.top, 4)
             } label: {
-                rule(text: SessionEventText.caption(event, digest: digest))
+                rule(SessionEventText.lines(event, digest: digest))
             }
             .disclosureGroupStyle(.automatic)
             .padding(.vertical, 6)
             .onAppear { expanded = initiallyExpanded }
         } else {
-            rule(text: SessionEventText.caption(event))
+            rule(SessionEventText.lines(event))
                 .padding(.vertical, 6)
-                .accessibilityElement(children: .combine)
         }
     }
 
     @State private var expanded = false
 
-    private func rule(text: String) -> some View {
-        HStack(spacing: 8) {
+    /// The caption stacked over its timestamp, centered between two hairlines.
+    ///
+    /// THE CAPTION IS MEASURED FIRST, because an HStack hands three flexible children a third
+    /// of the width each and two hairlines are as flexible as it gets: the caption used to be
+    /// laid out inside a third of the row however wide the window was, and wrapped wherever
+    /// that third happened to end - mid-model-name as often as not. `layoutPriority` measures
+    /// it at its ideal width instead, and the rules divide what is left. It therefore takes
+    /// the width it needs and no more, which is also what keeps the rules long.
+    ///
+    /// THE RULES CARRY THE MINIMUM, not the caption a maximum. The mirror failure is a model
+    /// identifier long enough to take the whole row and squeeze both hairlines out of
+    /// existence, leaving something that no longer reads as a boundary - measured at 1-2 pt of
+    /// rule for a 135-character name. A stack reserves a lower-priority child's minimum before
+    /// proposing to a higher-priority one, so `minRuleWidth` on the hairlines bounds the
+    /// caption from the other side: it wraps (still centered) rather than eating the rule.
+    /// Expressing it this way needs no container measurement, which is the part that would
+    /// silently degrade wherever the container is not the transcript's scroll view.
+    private func rule(_ text: SessionEventText.Lines) -> some View {
+        HStack(spacing: 10) {
             line
-            Text(text)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(spacing: 1) {
+                Text(text.headline)
+                    .font(.caption)
+                if let stamp = text.timestamp {
+                    Text(stamp)
+                        .font(.caption2)
+                }
+            }
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .layoutPriority(1)
             line
         }
-        .accessibilityLabel(text)
+        // ONE element, not two Texts: the row now holds a headline and a stamp, and both paths
+        // below (plain and disclosure label) must speak the sentence once, the same way.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(text.joined)
     }
+
+    /// Short enough to stay out of the caption's way at any width, long enough to still read
+    /// as a rule rather than a stray pixel on the narrowest phone.
+    private static let minRuleWidth: CGFloat = 24
 
     private var line: some View {
         Rectangle()
             .fill(Color.secondary.opacity(0.25))
             .frame(height: 1)
+            .frame(minWidth: Self.minRuleWidth)
     }
 }
 
