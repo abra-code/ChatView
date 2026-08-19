@@ -1183,6 +1183,13 @@ final class ChatStore: ObservableObject {
     /// (no live continuations), the streaming / permission / buffer state is cleared, and the
     /// status surfaces are restored. Appended turns (if a transport runs) land after the loaded items.
     private func applyLoadedTranscript(_ transcript: ChatTranscript) {
+        // Both restore paths funnel through here, so this is the one place that sees every decode.
+        // The placeholder rows make the loss visible to the READER of the conversation; this makes
+        // it searchable for whoever has to work out why an entry is unreadable.
+        if transcript.unreadableItemCount > 0 {
+            logger.log("Chat restored a transcript with \(transcript.unreadableItemCount) "
+                       + "unreadable item(s); each is shown in place as an error row", .warning)
+        }
         let turnWasInFlight = isStreaming || awaitingReply
         items = transcript.items
         transcriptGeneration &+= 1

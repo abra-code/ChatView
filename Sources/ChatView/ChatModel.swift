@@ -892,14 +892,122 @@ public struct ChatTranscript: Equatable, Sendable, Codable {
         case version, items, usage, plan, title, participants
     }
 
+    /// One element of `items`, decoded so that a single unreadable entry cannot destroy the rest.
+    ///
+    /// `ChatItem.init(from:)` throws on an item whose `type` it does not recognize, and an array
+    /// decode propagates that: ONE bad element used to fail the whole `ChatTranscript`, which
+    /// `decode(from:)` then swallowed with `try?`. A conversation with a single malformed entry
+    /// became a conversation that would not open, silently. That really happened, to a real user,
+    /// because of one item written with its payload at the top level.
+    ///
+    /// This never throws, so the array decode always advances cleanly and the surviving items are
+    /// kept. What was lost is reported in place rather than omitted: losing one line of a
+    /// conversation is a nuisance, losing the conversation is not, and losing either without being
+    /// told is the worst of the three.
+    ///
+    /// A HOST MUST NOT PERSIST A DECODED TRANSCRIPT BACK OVER ITS SOURCE. The placeholder encodes
+    /// as an ordinary `.error` row, so writing a rendered transcript back replaces the bytes that
+    /// could not be read with a sentence about them - permanently, and after that second read
+    /// reports nothing unreadable at all. Persist what the element emits per entry, and rebuild the
+    /// transcript from that.
+    private struct LossyChatItem: Decodable {
+        let item: ChatItem?
+        let probedType: String?
+
+        /// The one field worth recovering from an item that would not decode: enough to name what
+        /// was unreadable. Its `id` is deliberately NOT recovered - see the placeholder ids below.
+        private struct Probe: Decodable {
+            let type: String?
+        }
+
+        init(from decoder: Decoder) throws {
+            if let decoded = try? ChatItem(from: decoder) {
+                item = decoded
+                probedType = nil
+                return
+            }
+            item = nil
+            probedType = (try? Probe(from: decoder))?.type
+        }
+    }
+
+    /// How many items in the decoded transcript were replaced by a placeholder. Not part of the
+    /// wire shape - it describes this decode, not the conversation - so it is absent from
+    /// `CodingKeys` and never round-trips.
+    public private(set) var unreadableItemCount: Int = 0
+
+    /// The names of the transcript's SIDE surfaces that would not decode and fell back to their
+    /// defaults. Like `unreadableItemCount`, absent from `CodingKeys` - it describes this decode.
+    public private(set) var unreadableFields: [String] = []
+
+    /// `unreadableItemCount` and `unreadableFields` describe a DECODE, not a conversation, so they
+    /// stay out of equality. In it, `decode(from:)` stops being idempotent: re-injecting a repaired
+    /// version of a transcript already on screen would differ from the damaged one by the counts
+    /// alone, `ChatStore`'s restore dedup would see a change that is not there, and re-applying the
+    /// transcript discards a turn that arrived in between.
+    public static func == (lhs: ChatTranscript, rhs: ChatTranscript) -> Bool {
+        lhs.version == rhs.version && lhs.items == rhs.items && lhs.usage == rhs.usage
+            && lhs.plan == rhs.plan && lhs.title == rhs.title
+            && lhs.participants == rhs.participants
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
-        self.items = try container.decodeIfPresent([ChatItem].self, forKey: .items) ?? []
-        self.usage = try container.decodeIfPresent(UsageInfo.self, forKey: .usage)
-        self.plan = try container.decodeIfPresent([PlanEntry].self, forKey: .plan) ?? []
-        self.title = try container.decodeIfPresent(String.self, forKey: .title)
-        self.participants = try container.decodeIfPresent([Participant].self, forKey: .participants)
+        let lossy = try container.decodeIfPresent([LossyChatItem].self, forKey: .items) ?? []
+        // A PLACEHOLDER'S ID MUST COLLIDE WITH NOTHING. Adopting the id probed off the unreadable
+        // element is the tempting branch and the dangerous one: only `.image`, `.system` and
+        // `.error` carry `id` at the top level of an item, so in practice a probed id means the
+        // element was an ENVELOPE - exactly the shape `fireEntry` hands hosts, `id` and all. A host
+        // that stores envelopes and restores one by mistake would give the placeholder the real
+        // message's id, and since every mutation path finds items with `firstIndex`, the live
+        // turn's status updates would land on the placeholder and be dropped. Positional instead,
+        // then disambiguated against every id in the transcript - including a real item that
+        // happens to be called `unreadable-item-0`.
+        var taken = Set(lossy.compactMap { $0.item?.id })
+        var decoded: [ChatItem] = []
+        decoded.reserveCapacity(lossy.count)
+        var unreadable = 0
+        for (index, element) in lossy.enumerated() {
+            if let item = element.item {
+                decoded.append(item)
+                continue
+            }
+            unreadable += 1
+            var id = "unreadable-item-\(index)"
+            var bump = 0
+            while taken.contains(id) {
+                bump += 1
+                id = "unreadable-item-\(index)-\(bump)"
+            }
+            taken.insert(id)
+            let text: String
+            if let type = element.probedType {
+                text = "This entry could not be read (type \"\(type)\")."
+            } else {
+                text = "This entry could not be read (no type given)."
+            }
+            decoded.append(.error(id: id, text: text))
+        }
+        self.items = decoded
+        self.unreadableItemCount = unreadable
+        // The same failure one key over. `usage`, `plan`, `participants` and `title` all threw out
+        // of this initializer, and `decode(from:)` swallowed it identically - so a future
+        // `PlanEntry.Status` case would drop a whole conversation exactly the way a future
+        // `ChatItem` case used to. None of them is the conversation, so each degrades to its
+        // default and says which one was lost.
+        var lost: [String] = []
+        do { self.usage = try container.decodeIfPresent(UsageInfo.self, forKey: .usage) }
+        catch { self.usage = nil; lost.append("usage") }
+        do { self.plan = try container.decodeIfPresent([PlanEntry].self, forKey: .plan) ?? [] }
+        catch { self.plan = []; lost.append("plan") }
+        do { self.title = try container.decodeIfPresent(String.self, forKey: .title) }
+        catch { self.title = nil; lost.append("title") }
+        do {
+            self.participants = try container.decodeIfPresent([Participant].self,
+                                                              forKey: .participants)
+        } catch { self.participants = nil; lost.append("participants") }
+        self.unreadableFields = lost
     }
 
     public func encode(to encoder: Encoder) throws {

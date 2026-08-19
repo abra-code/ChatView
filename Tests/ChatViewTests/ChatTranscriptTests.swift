@@ -682,3 +682,222 @@ private final class AppendConfigSource: ChatContentSource {
         return AnyCancellable { MainActor.assumeIsolated { self.appendObservers[id] = nil } }
     }
 }
+
+// MARK: - One unreadable item must cost one line, not the conversation
+
+@MainActor
+final class ChatTranscriptLossyDecodeTests: XCTestCase {
+
+    /// `[Any]`, not `[[String: Any]]`: a bad element is not always an object, and "does the array
+    /// still advance" is a real question for a bare string, a number, or null.
+    private func transcript(_ items: [Any]) -> ChatTranscript? {
+        ChatTranscript.decode(from: ["version": 1, "items": items] as [String: Any])
+    }
+
+    private let good: [String: Any] =
+        ["type": "message", "message": ["id": "m0", "role": "local", "text": "hello"]]
+    private let alsoGood: [String: Any] =
+        ["type": "message", "message": ["id": "m1", "role": "agent", "text": "hi"]]
+
+    /// THE EXACT SHAPE THAT COST A USER A CONVERSATION: ChatView's own condense marker, written
+    /// with the payload at the top level and no `type` discriminator. One of these used to fail the
+    /// whole transcript, and `decode(from:)` swallowed the throw, so the restore did nothing at all.
+    func testTheItemThatUsedToDestroyAConversationNowCostsOneLine() throws {
+        let bare: [String: Any] = ["id": "condense-1", "kind": "resumed",
+                                   "timestamp": "2026-08-18T21:56:33Z"]
+        let restored = try XCTUnwrap(transcript([good, bare, alsoGood]),
+                                     "the transcript must decode, not vanish")
+        XCTAssertEqual(restored.items.count, 3, "the readable items must all survive")
+        XCTAssertEqual(restored.items.map(\.id), ["m0", "unreadable-item-1", "m1"],
+                       "in place, so the conversation still reads in order")
+        XCTAssertEqual(restored.unreadableItemCount, 1)
+    }
+
+    /// Visible, not silent. A dropped line the reader is never told about is the failure mode this
+    /// whole change exists to remove.
+    func testTheReplacementIsAVisibleErrorNamingWhatCouldNotBeRead() throws {
+        let unknown: [String: Any] = ["type": "somethingFromTheFuture", "payload": ["a": 1]]
+        let restored = try XCTUnwrap(transcript([good, unknown]))
+        guard case .error(_, let text) = try XCTUnwrap(restored.items.last) else {
+            return XCTFail("an unreadable item must become an error row, which renders in red")
+        }
+        XCTAssertTrue(text.contains("could not be read"), "got: \(text)")
+        XCTAssertTrue(text.contains("somethingFromTheFuture"),
+                      "the message must name the type that could not be read; got: \(text)")
+    }
+
+    func testAnItemWithNoTypeAtAllStillGetsAPlaceholder() throws {
+        let restored = try XCTUnwrap(transcript([["nothing": "useful"] as [String: Any]]))
+        guard case .error(let id, let text) = try XCTUnwrap(restored.items.first) else {
+            return XCTFail("expected a placeholder")
+        }
+        XCTAssertEqual(id, "unreadable-item-0", "a positional id when the item carried none")
+        XCTAssertTrue(text.contains("no type given"), "got: \(text)")
+    }
+
+    /// Several bad items must not collapse into one row, and their ids must stay distinct - a
+    /// duplicate `Identifiable.id` in a ForEach is undefined behavior in SwiftUI.
+    func testSeveralUnreadableItemsKeepDistinctIdentities() throws {
+        let restored = try XCTUnwrap(transcript([["a": 1] as [String: Any],
+                                                 ["b": 2] as [String: Any], good]))
+        XCTAssertEqual(restored.items.count, 3)
+        XCTAssertEqual(restored.unreadableItemCount, 2)
+        XCTAssertEqual(Set(restored.items.map(\.id)).count, 3, "ids must be unique")
+    }
+
+    /// A conversation of nothing but unreadable items is still a conversation that opens - the
+    /// reader sees what happened instead of an empty window.
+    func testATranscriptOfOnlyUnreadableItemsStillDecodes() throws {
+        let restored = try XCTUnwrap(transcript([["a": 1] as [String: Any]]),
+                                     "decoding must not fail even when nothing is readable")
+        XCTAssertEqual(restored.items.count, 1)
+    }
+
+    /// Not every bad element is an object. Each must still consume exactly one array slot, or the
+    /// items after it shift and the conversation silently reorders.
+    func testNonObjectElementsEachCostExactlyOneSlot() throws {
+        let restored = try XCTUnwrap(transcript([good, "a bare string", 42, true,
+                                                 NSNull(), [1, 2], alsoGood]))
+        XCTAssertEqual(restored.items.count, 7, "every element must occupy its own slot")
+        XCTAssertEqual(restored.unreadableItemCount, 5)
+        XCTAssertEqual(restored.items.first?.id, "m0")
+        XCTAssertEqual(restored.items.last?.id, "m1", "the good item after them must not shift")
+    }
+
+    /// The commonest real failure: a type the reader knows, carrying a payload it cannot read.
+    func testAKnownTypeWithAnUnreadablePayloadIsNamedByItsType() throws {
+        let deep: [String: Any] = ["type": "message", "message": ["id": 123]]
+        let restored = try XCTUnwrap(transcript([good, deep]))
+        guard case .error(let id, let text) = try XCTUnwrap(restored.items.last) else {
+            return XCTFail("expected a placeholder")
+        }
+        XCTAssertEqual(id, "unreadable-item-1")
+        XCTAssertTrue(text.contains("\"message\""), "got: \(text)")
+    }
+
+    /// THE COLLISION THAT DROPS LIVE UPDATES. An entry envelope carries `id` at the top level -
+    /// the shape fireEntry hands hosts - so a host restoring one by mistake used to give the
+    /// placeholder the real message's id. Every mutation path finds items with `firstIndex`, so
+    /// the live turn's status updates landed on the placeholder and were silently discarded.
+    func testAPlaceholderNeverStealsARealItemsIdentity() throws {
+        let envelope: [String: Any] = ["sequence": 1, "type": "message", "id": "user-1",
+                                       "data": ["type": "message",
+                                                "message": ["id": "user-1", "role": "local",
+                                                            "text": "hi"]] as [String: Any]]
+        let real: [String: Any] = ["type": "message",
+                                   "message": ["id": "user-1", "role": "local", "text": "hi"]]
+        let restored = try XCTUnwrap(transcript([envelope, real]))
+        XCTAssertEqual(restored.items.count, 2)
+        XCTAssertEqual(Set(restored.items.map(\.id)).count, 2,
+                       "the placeholder must not take the id of the message that follows it")
+        XCTAssertEqual(restored.items.last?.id, "user-1", "the real message keeps its own id")
+    }
+
+    /// And it must not take an id from a real item that happens to be named like a placeholder.
+    func testAPlaceholderStepsAsideForARealItemNamedLikeOne() throws {
+        let impostor: [String: Any] = ["type": "system", "id": "unreadable-item-0",
+                                       "text": "a genuine system line"]
+        let restored = try XCTUnwrap(transcript([["nothing": "useful"] as [String: Any], impostor]))
+        XCTAssertEqual(Set(restored.items.map(\.id)).count, 2)
+        XCTAssertEqual(restored.items.last?.id, "unreadable-item-0", "the real item keeps the name")
+    }
+
+    /// EQUALITY MUST IGNORE THE DECODE DIAGNOSTICS. `ChatStore` dedups restores with `!=`; if the
+    /// counts participate, a repaired transcript differs from the damaged one by the counts alone,
+    /// the dedup sees a change that is not there, and re-applying discards a turn that arrived in
+    /// between.
+    func testTheDecodeDiagnosticsAreNotPartOfEquality() throws {
+        let damaged = try XCTUnwrap(transcript([good, ["nothing": "useful"] as [String: Any]]))
+        let repaired = try XCTUnwrap(transcript([
+            good,
+            ["type": "error", "id": "unreadable-item-1",
+             "text": "This entry could not be read (no type given)."] as [String: Any],
+        ]))
+        XCTAssertEqual(damaged.items, repaired.items, "same items")
+        XCTAssertEqual(damaged.unreadableItemCount, 1)
+        XCTAssertEqual(repaired.unreadableItemCount, 0, "different diagnostics")
+        XCTAssertEqual(damaged, repaired, "yet equal, or the restore dedup re-applies and wipes a turn")
+    }
+
+    /// The same failure one key over. A side surface that will not decode must cost that surface,
+    /// not the conversation.
+    func testAMalformedSideSurfaceDoesNotCostTheConversation() throws {
+        let restored = try XCTUnwrap(
+            ChatTranscript.decode(from: ["version": 1, "items": [good, alsoGood],
+                                         "plan": [["id": 1, "content": "x",
+                                                   "status": "fromTheFuture"]]] as [String: Any]),
+            "a plan this version cannot read must not drop the conversation with it")
+        XCTAssertEqual(restored.items.count, 2)
+        XCTAssertEqual(restored.plan, [])
+        XCTAssertEqual(restored.unreadableFields, ["plan"])
+    }
+
+    /// Lossiness is confined to `items`. A malformed transcript is still a malformed transcript.
+    func testAValueThatIsNotATranscriptAtAllIsStillRejected() {
+        XCTAssertNil(ChatTranscript.decode(from: "not json"))
+        XCTAssertNil(ChatTranscript.decode(from: ["version": 1, "items": "not an array"]
+                                                 as [String: Any]))
+    }
+
+    /// The single-item append channel stays STRICT: appending a bad item must be refused, not
+    /// turned into an error row the host never asked for.
+    func testTheAppendChannelDoesNotSubstitutePlaceholders() {
+        XCTAssertNil(ChatItem.decode(from: ["id": "condense-1", "kind": "resumed"]
+                                     as [String: Any]))
+    }
+}
+
+/// A logger that keeps what it was told. Every other logger in this package's tests discards its
+/// input, which is why the store's own half of the unreadable-item handling had no coverage: the
+/// warning is the only thing it does, and nothing could observe it.
+private final class CapturingLogger: ChatLogger, @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    func log(_ message: String, _ level: ChatLogLevel) {
+        lock.withLock { lines.append("[\(level)] \(message)") }
+    }
+    var captured: [String] { lock.withLock { lines } }
+}
+
+@MainActor
+final class ChatStoreUnreadableItemLoggingTests: XCTestCase {
+
+    /// The placeholder rows tell the person reading the conversation. This tells whoever has to
+    /// find out why - and it is the reason a restore is no longer indistinguishable from silence.
+    func testRestoringATranscriptWithUnreadableItemsIsReported() {
+        let logger = CapturingLogger()
+        let source = FakeContentSource()
+        let store = ChatStore(config: ChatConfiguration(dictionary: [:], logger: logger),
+                              logger: logger, contentSource: source)
+        store.start()
+
+        source.content = [
+            "version": 1,
+            "items": [["type": "message",
+                       "message": ["id": "m0", "role": "local", "text": "hi"]] as [String: Any],
+                      ["id": "condense-1", "kind": "resumed"] as [String: Any]],
+        ] as [String: Any]
+
+        XCTAssertEqual(store.items.count, 2, "the conversation still opens")
+        let warnings = logger.captured.filter { $0.contains("unreadable item") }
+        XCTAssertEqual(warnings.count, 1, "exactly one report; got: \(logger.captured)")
+        XCTAssertTrue(warnings[0].contains("warning"), "got: \(warnings[0])")
+        XCTAssertTrue(warnings[0].contains("1 "), "the count belongs in it; got: \(warnings[0])")
+    }
+
+    func testACleanRestoreSaysNothing() {
+        let logger = CapturingLogger()
+        let source = FakeContentSource()
+        let store = ChatStore(config: ChatConfiguration(dictionary: [:], logger: logger),
+                              logger: logger, contentSource: source)
+        store.start()
+        source.content = [
+            "version": 1,
+            "items": [["type": "message",
+                       "message": ["id": "m0", "role": "local", "text": "hi"]] as [String: Any]],
+        ] as [String: Any]
+        XCTAssertEqual(store.items.count, 1)
+        XCTAssertTrue(logger.captured.filter { $0.contains("unreadable") }.isEmpty,
+                      "a clean restore must not warn; got: \(logger.captured)")
+    }
+}
