@@ -104,6 +104,54 @@ final class SessionCondenseTests: XCTestCase {
                        PrimeCondense(keepRecentTurns: 4, maxDigestTokens: nil))
     }
 
+    // MARK: - Which model summarizes
+
+    /// WHO summarizes is the host's to ask for, per restore. Carried verbatim: the set of
+    /// summarizers is the agent's vocabulary, so a value this library does not recognize is still
+    /// a value it must deliver.
+    func testTheChosenSummarizerIsReadOffTheCondenseObject() {
+        let ask = ChatStore.parseCondenseRequestForTests(
+            ["version": 1, "items": [], "condense": ["keepRecentTurns": 6, "backend": "session"]])
+        XCTAssertEqual(ask, PrimeCondense(keepRecentTurns: 6, backend: "session"))
+
+        let unknown = ChatStore.parseCondenseRequestForTests(
+            ["version": 1, "items": [], "condense": ["backend": "some-future-summarizer"]])
+        XCTAssertEqual(unknown?.backend, "some-future-summarizer",
+                       "the agent owns the vocabulary; this library must not filter it")
+    }
+
+    /// A host that stores the user's choice as a string has an EMPTY one before they have chosen.
+    /// Forwarding that would name a summarizer nobody asked for, which an agent may refuse - and a
+    /// refusal here means the whole conversation is replayed instead of summarized.
+    func testAnEmptySummarizerMeansNoPreference() {
+        XCTAssertNil(ChatStore.parseCondenseRequestForTests(
+            ["version": 1, "items": [], "condense": ["backend": ""]])?.backend)
+        XCTAssertNil(ChatStore.parseCondenseRequestForTests(
+            ["version": 1, "items": [], "condense": ["backend": "   "]])?.backend)
+        // Still a request, though: the KEY is what asks for summarization.
+        XCTAssertEqual(ChatStore.parseCondenseRequestForTests(
+            ["version": 1, "items": [], "condense": ["backend": ""]]), PrimeCondense())
+    }
+
+    /// The user's report this exists for: pick a summarizer, and the NEXT prime must carry it.
+    /// Nothing else about the restore changed - same transcript, same bounds - so a comparison
+    /// that ignored the summarizer would drop the choice and summarize with the old one.
+    func testChangingOnlyTheSummarizerReachesTheAgent() {
+        let (store, transport, source) = Self.primedStore()
+        defer { store.teardown() }
+
+        Self.restore(source, condense: ["keepRecentTurns": 6, "backend": "foundation"])
+        store.send("first")
+        XCTAssertEqual(transport.lastCondense??.backend, "foundation")
+
+        Self.restore(source, condense: ["keepRecentTurns": 6, "backend": "session"])
+        store.send("second")
+        XCTAssertEqual(transport.lastCondense??.backend, "session",
+                       "the prime must carry the summarizer in force at send time")
+        XCTAssertEqual(transport.lastCondense??.keepRecentTurns, 6,
+                       "and must not disturb the bounds it did not change")
+    }
+
     // MARK: - Changing the choice after the conversation has been sent into
 
     /// A condense-only restore must reach the agent with the NEW request, not the one the

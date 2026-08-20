@@ -44,6 +44,11 @@ final class ACPPrimingTests: XCTestCase {
     ///   busy-once   - fail the FIRST session/prime with -32003, succeed after
     ///   slow-prime  - stall session/prime for 400ms before answering, holding a prompt that
     ///                 chains behind it inside the pre-dispatch gap for the whole window
+    ///   decline-condense - answer session/prime with condensed:false and a reason, the shape an
+    ///                 agent returns when it will not summarize (no summarizer available, the
+    ///                 request named one it cannot run, summarization disabled)
+    ///   decline-bare - condensed:false with no reason: an agent that answered the question and
+    ///                 did not explain
     private static let fakeAgentScript = """
         import sys, json, time
         journal = open(sys.argv[1], "a", buffering=1)
@@ -76,6 +81,15 @@ final class ACPPrimingTests: XCTestCase {
                     time.sleep(0.4)
                     out({"jsonrpc": "2.0", "id": rid,
                          "result": {"primed": len(msg.get("params", {}).get("messages", []))}})
+                elif behavior == "decline-condense":
+                    out({"jsonrpc": "2.0", "id": rid,
+                         "result": {"primed": len(msg.get("params", {}).get("messages", [])),
+                                    "condensed": False,
+                                    "reason": "the model is idle-unloaded"}})
+                elif behavior == "decline-bare":
+                    out({"jsonrpc": "2.0", "id": rid,
+                         "result": {"primed": len(msg.get("params", {}).get("messages", [])),
+                                    "condensed": False}})
                 else:
                     out({"jsonrpc": "2.0", "id": rid,
                          "result": {"primed": len(msg.get("params", {}).get("messages", []))}})
@@ -144,6 +158,135 @@ final class ACPPrimingTests: XCTestCase {
         XCTAssertEqual(wire.map { $0["content"] as? String }, ["earlier question", "earlier answer"])
         XCTAssertEqual(primeParams?["sessionId"] as? String, "s1")
         await transport.stop()
+    }
+
+    /// The summarizer the user chose has to arrive in the object the agent documents. A choice
+    /// that stops at the transport is invisible: the restore still succeeds, the model is still
+    /// primed, and the only trace is a summarizer name in the marker afterwards that does not
+    /// match what was picked - which reads as the app ignoring them.
+    func testTheCondenseRequestCarriesTheChosenSummarizer() async throws {
+        let transport = try makeTransport()
+        transport.primeHistory([message("u1", role: .local, "earlier question")],
+                               condense: PrimeCondense(keepRecentTurns: 6, backend: "session"))
+        await transport.start()
+        await waitForJournal { $0.contains("session/prime") }
+
+        let ask = journal().last { $0.method == "session/prime" }?.params["condense"] as? [String: Any]
+        XCTAssertEqual(ask?["keepRecentTurns"] as? Int, 6)
+        XCTAssertEqual(ask?["backend"] as? String, "session")
+        await transport.stop()
+    }
+
+    /// No stored choice means "your default", which is the absence of the key - not a summarizer
+    /// named "". An agent may refuse that, and a refusal replays the whole conversation.
+    func testAnEmptySummarizerIsLeftOffTheWire() async throws {
+        let transport = try makeTransport()
+        transport.primeHistory([message("u1", role: .local, "earlier question")],
+                               condense: PrimeCondense(keepRecentTurns: 6, backend: ""))
+        await transport.start()
+        await waitForJournal { $0.contains("session/prime") }
+
+        let ask = journal().last { $0.method == "session/prime" }?.params["condense"] as? [String: Any]
+        XCTAssertNotNil(ask, "the condense key itself is still the request to summarize")
+        XCTAssertNil(ask?["backend"], "an empty choice must not reach the agent as a name")
+        await transport.stop()
+    }
+
+    /// Whitespace is not a choice either. A host can build `PrimeCondense` directly, without
+    /// going through the content parser that trims, so the transport trims too - an agent reading
+    /// "   " as a value it does not recognize would refuse and replay the whole conversation.
+    func testAWhitespaceSummarizerIsLeftOffTheWire() async throws {
+        let transport = try makeTransport()
+        transport.primeHistory([message("u1", role: .local, "earlier question")],
+                               condense: PrimeCondense(keepRecentTurns: 6, backend: "  \n "))
+        await transport.start()
+        await waitForJournal { $0.contains("session/prime") }
+
+        let ask = journal().last { $0.method == "session/prime" }?.params["condense"] as? [String: Any]
+        XCTAssertNotNil(ask, "the condense key itself is still the request to summarize")
+        XCTAssertNil(ask?["backend"])
+        await transport.stop()
+    }
+
+    /// A REQUESTED condensation that did not happen has to say so. The user picked a summarizer
+    /// and sent a message; without this the only difference from success is a slower turn, which
+    /// reads as the app ignoring them - the same failure the marker on the success path prevents.
+    func testADeclinedCondensationIsVisibleRatherThanSilent() async throws {
+        let transport = try makeTransport(behavior: "decline-condense")
+        transport.primeHistory([message("u1", role: .local, "earlier question")],
+                               condense: PrimeCondense(keepRecentTurns: 6, backend: "session"))
+        await transport.start()
+        await waitForJournal { $0.contains("session/prime") }
+        try await Task.sleep(nanoseconds: 300_000_000)   // let the response be handled
+        await transport.stop()
+
+        var notices: [String] = []
+        for await event in transport.events {
+            // TRANSIENT, not `.system`: the store shows it without journaling it, so a restore
+            // that declines does not leave a permanent line in the conversation - and does not
+            // leave a byte-identical pile of them after a few of them.
+            if case .transientSystem(let text) = event { notices.append(text) }
+        }
+        XCTAssertTrue(notices.contains { $0.contains("Not summarized") }, "\(notices)")
+        XCTAssertTrue(notices.contains { $0.contains("the model is idle-unloaded") },
+                      "the agent's reason is the whole value of the notice: \(notices)")
+    }
+
+    /// An agent that does not implement `condense` answers a plain `{"primed": n}` - no
+    /// `condensed` key at all. Saying "not summarized" on every restore of every conversation in
+    /// that window would be noise about a capability the agent never claimed, so the KEY's
+    /// presence is the gate rather than the reason's.
+    func testAnAgentWithoutCondenseSupportSaysNothing() async throws {
+        let transport = try makeTransport()   // the default agent answers `primed` only
+        transport.primeHistory([message("u1", role: .local, "earlier question")],
+                               condense: PrimeCondense(keepRecentTurns: 6, backend: "session"))
+        await transport.start()
+        await waitForJournal { $0.contains("session/prime") }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        await transport.stop()
+
+        var notices: [String] = []
+        for await event in transport.events {
+            if case .transientSystem(let text) = event { notices.append(text) }
+            if case .system(let text) = event { notices.append(text) }
+        }
+        XCTAssertFalse(notices.contains { $0.contains("Not summarized") }, "\(notices)")
+    }
+
+    /// And a prime nobody asked to condense stays silent: "nothing was summarized" on every
+    /// ordinary restore would be noise.
+    func testAnUnrequestedPrimeSaysNothingAboutSummarizing() async throws {
+        let transport = try makeTransport(behavior: "decline-condense")
+        transport.primeHistory([message("u1", role: .local, "earlier question")])
+        await transport.start()
+        await waitForJournal { $0.contains("session/prime") }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        await transport.stop()
+
+        var notices: [String] = []
+        for await event in transport.events {
+            if case .transientSystem(let text) = event { notices.append(text) }
+        }
+        XCTAssertFalse(notices.contains { $0.contains("Not summarized") }, "\(notices)")
+    }
+
+    /// But an agent that DID answer and declined without explaining still has to say so: "the
+    /// whole conversation went to the model" is the part the user can act on, reason or no reason.
+    func testADeclineWithoutAReasonStillSaysWhatHappened() async throws {
+        let transport = try makeTransport(behavior: "decline-bare")
+        transport.primeHistory([message("u1", role: .local, "earlier question")],
+                               condense: PrimeCondense(keepRecentTurns: 6))
+        await transport.start()
+        await waitForJournal { $0.contains("session/prime") }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        await transport.stop()
+
+        var notices: [String] = []
+        for await event in transport.events {
+            if case .transientSystem(let text) = event { notices.append(text) }
+        }
+        XCTAssertTrue(notices.contains { $0.contains("Not summarized") }, "\(notices)")
+        XCTAssertFalse(notices.contains { $0.hasSuffix(":") }, "no dangling colon: \(notices)")
     }
 
     func testPrimeIsGatedOnTheSessionPrimeCapability() async throws {

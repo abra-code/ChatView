@@ -36,6 +36,10 @@ The nested objects inside events and transcripts use the model's own JSON vocabu
   under a key named for the case (`message`, `toolCall`, `memberEvent`, `callEvent`, `file`,
   `image`, `sessionEvent`) except `system` / `error`, which inline `id` + `text`, and `image`, which
   inlines `id` + `role` beside its `image` object.
+- `transientSystem` is an EVENT ONLY. It produces the same `system` ChatItem as `system` does and
+  there is no `transientSystem` item type - the difference between the two is whether the host is
+  told to persist it, which is why the event tags differ and the item tags do not. Nothing decoding
+  a transcript needs to know about it.
 - `SessionDigest` is the one object whose ARRAYS ARE REQUIRED. `establishedFacts`, `decisions`,
   `openThreads` and `userPreferences` are non-optional in Swift, so they are written always - empty
   when empty - and demanded on decode; `summarizer`, `droppedTurns`, `verbatimTurns` and
@@ -143,6 +147,7 @@ plan                    { "event":"plan", "plan":[<PlanEntry>] }
 usage                   { "event":"usage", "usage":<UsageInfo> }
 error                   { "event":"error", "message":String, "recoverable":Bool }
 system                  { "event":"system", "text":String }
+transientSystem         { "event":"transientSystem", "text":String }
 image                   { "event":"image", "itemID":String, "role":String, "image":<ChatImage> }
 messageReceived         { "event":"messageReceived", "message":<ChatMessage> }
 messageIDConfirmed      { "event":"messageIDConfirmed", "localID":String, "serverID":String }

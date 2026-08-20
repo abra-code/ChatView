@@ -484,8 +484,18 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
                     var ask: [String: Any] = [:]
                     if let keep = condense.keepRecentTurns { ask["keepRecentTurns"] = keep }
                     if let maxTokens = condense.maxDigestTokens { ask["maxDigestTokens"] = maxTokens }
-                    // Sent even when empty: the KEY is the request. Omitting it because both
-                    // bounds are nil would silently turn "summarize with your defaults" into
+                    // Whatever the host named, verbatim - the vocabulary is the agent's. Trimmed
+                    // and omitted when empty so a host with no stored choice asks for the agent's
+                    // default rather than for a summarizer called "". Trimmed HERE as well as in
+                    // the content parser because a host can build this struct directly, and an
+                    // agent is entitled to read "   " as a value it does not recognize.
+                    if let backend = condense.backend?
+                        .trimmingCharacters(in: .whitespacesAndNewlines), !backend.isEmpty
+                    {
+                        ask["backend"] = backend
+                    }
+                    // Sent even when empty: the KEY is the request. Omitting it because every
+                    // field is nil would silently turn "summarize with your defaults" into
                     // "replay everything", which is the opposite of what the caller asked.
                     params["condense"] = ask
                 }
@@ -524,15 +534,42 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
     /// from the answers getting worse - they end up guessing what was dropped. So the moment the
     /// agent says it summarized, the transcript gets a marker carrying the summary itself.
     ///
-    /// SILENT WHEN NOTHING WAS CONDENSED. `condensed: false` is the ordinary, healthy answer -
-    /// the agent primed the full history and said why - and a marker announcing "nothing was
-    /// summarized" on every restore would be noise for the common case. The `reason` is logged
-    /// instead, because it explains a slow first turn to whoever is reading the log.
+    /// A DECLINE THE HOST ASKED FOR IS ALSO SOMETHING TO READ. `condensed: false` is a healthy
+    /// answer - the agent primed the full history, nothing was lost - but it was silent, and
+    /// silence is wrong on the path where a person chose to summarize: they picked a summarizer,
+    /// sent a message, and the only difference from success was a slower turn. That is the same
+    /// "the app ignored me" the marker above exists to prevent, pointed the other way. So a
+    /// requested condensation that did not happen becomes one system line naming the reason.
+    ///
+    /// STILL SILENT WHEN NOBODY ASKED. A prime with no `condense` key cannot be declined, and
+    /// announcing "nothing was summarized" on every ordinary restore would be noise.
     private func emitCondensationEvent(from result: [String: Any], requested: Bool) {
+        let answered = result["condensed"] != nil
         let condensed = (result["condensed"] as? NSNumber)?.boolValue ?? false
         guard condensed else {
-            if requested, let reason = result["reason"] as? String {
-                logger.log("ACP: prime was not condensed - \(reason)", .verbose)
+            if requested {
+                let reason = (result["reason"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                logger.log(
+                    "ACP: prime was not condensed - \(reason ?? "no reason given")", .verbose)
+                // ONLY WHEN THE AGENT ANSWERED THE QUESTION. The KEY's presence is what separates
+                // "it considered summarizing and did not" from "it has never heard of condense" -
+                // an agent without the feature answers a plain `{"primed": n}`, which lands here
+                // on every single restore, and a line about a capability it never claimed would be
+                // noise forever rather than news. Keyed on the key rather than on `reason` so that
+                // an agent that declines without explaining still tells the user what happened,
+                // which is the part they can act on.
+                //
+                // Transient: this describes the restore, not the conversation, and it is
+                // re-derived on the next one.
+                if answered {
+                    // The consequence first, because it is what decides whether the reader needs
+                    // to do anything: nothing was lost, the turn is just bigger and slower.
+                    let head = "Not summarized - the whole conversation was sent to the model "
+                        + "instead"
+                    let text = (reason?.isEmpty == false) ? "\(head): \(reason!)" : "\(head)."
+                    eventSink.yield(.transientSystem(text: text))
+                }
             }
             return
         }

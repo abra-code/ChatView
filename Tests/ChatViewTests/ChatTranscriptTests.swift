@@ -400,6 +400,51 @@ final class ChatContentRestoreTests: XCTestCase {
 @MainActor
 final class ChatSessionEventRoundTripTests: XCTestCase {
 
+    /// A NOTICE ABOUT THE RESTORE IS NOT PART OF THE CONVERSATION. `.transientSystem` is shown
+    /// like any system line and journaled by nobody: it is re-derived on every restore, so a host
+    /// that persisted it would append a byte-identical copy each time and replay the whole pile
+    /// on the next load. Review caught it as the "not summarized" line accumulating forever.
+    func testATransientSystemLineIsShownButNeverPersisted() throws {
+        let sink = EntrySink()
+        let logger = HistoryTestLogger()
+        var configuration = ChatConfiguration(dictionary: [:], logger: logger)
+        configuration.emitsEntryEvents = true
+        let store = ChatStore(config: configuration, logger: logger, hostEvents: { event in
+            if case .entry(let json) = event { sink.add(json) }
+        })
+
+        store.route(.system(text: "an ordinary notice"))
+        store.route(.transientSystem(text: "Not summarized - the model was idle-unloaded"))
+
+        XCTAssertEqual(store.items.count, 2, "both are on screen")
+        let entries = sink.rawJSONs()
+        XCTAssertEqual(entries.count, 1, "only the ordinary one is persisted: \(entries)")
+        XCTAssertTrue(entries[0].contains("an ordinary notice"), entries[0])
+        XCTAssertFalse(entries[0].contains("Not summarized"), entries[0])
+    }
+
+    /// AND IT DOES NOT REPEAT ITSELF. The same restore is re-primed several times in one session -
+    /// a cancelled or errored turn re-arms the context and the condense request rides in with it -
+    /// so three Stops produce the same sentence three times. Once is the news; not journaling it
+    /// bounds the damage to a session, and this bounds it to one line.
+    func testConsecutiveIdenticalTransientLinesCollapse() throws {
+        let logger = HistoryTestLogger()
+        let store = ChatStore(config: ChatConfiguration(dictionary: [:], logger: logger),
+                              logger: logger)
+        let notice = "Not summarized - the whole conversation was sent to the model instead."
+
+        store.route(.transientSystem(text: notice))
+        store.route(.transientSystem(text: notice))
+        store.route(.transientSystem(text: notice))
+        XCTAssertEqual(store.items.count, 1, "three identical notices in a row are one line")
+
+        // Only CONSECUTIVE ones collapse: the same sentence after a turn is news again, because
+        // it now describes a different attempt.
+        store.route(.system(text: "something else happened"))
+        store.route(.transientSystem(text: notice))
+        XCTAssertEqual(store.items.count, 3)
+    }
+
     /// THE REGRESSION THIS GUARDS COST A WHOLE CONVERSATION. `.sessionEvent` was the only case that
     /// handed `fireEntry` the bare payload instead of the ChatItem, so the persisted entry had no
     /// `type` discriminator. ChatItem's decoder throws on that, ChatTranscript decodes `items` as a

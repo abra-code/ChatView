@@ -713,15 +713,30 @@ public struct SessionDigest: Equatable, Sendable, Codable {
     }
 }
 
-/// What a host asks for when it wants a restore summarized rather than replayed. Both bounds are
+/// What a host asks for when it wants a restore summarized rather than replayed. The bounds are
 /// the agent's to clamp; nil means "your default".
 public struct PrimeCondense: Equatable, Sendable, Codable {
     public let keepRecentTurns: Int?
     public let maxDigestTokens: Int?
+    /// Which model should summarize THIS restore, in the agent's own vocabulary, or nil to leave
+    /// the choice to however the agent was configured.
+    ///
+    /// A STRING, deliberately, and never interpreted here. The set of summarizers is the agent's
+    /// (mlx-agent takes `auto`, `foundation`, `session`, `none`), it differs between agents, and a
+    /// closed enum in this library would mean a new summarizer needs a ChatView release before a
+    /// host could name it. So the value is carried through to `session/prime` untouched and the
+    /// agent decides - including whether it can honor it, which it reports back through the
+    /// condensation marker's summarizer name.
+    ///
+    /// It matters that this is per RESTORE rather than per agent process: a host offering the
+    /// choice to a person has to be able to honor it in the conversation in front of them, and an
+    /// agent outlives any one restore.
+    public let backend: String?
 
-    public init(keepRecentTurns: Int? = nil, maxDigestTokens: Int? = nil) {
+    public init(keepRecentTurns: Int? = nil, maxDigestTokens: Int? = nil, backend: String? = nil) {
         self.keepRecentTurns = keepRecentTurns
         self.maxDigestTokens = maxDigestTokens
+        self.backend = backend
     }
 }
 
@@ -1113,6 +1128,14 @@ public enum ChatEvent: Sendable {
     case configOptionsChanged([SessionConfigOption])       // the refreshed option set (a setter's confirmation)
     case image(itemID: String, role: ChatRole, image: ChatImage)   // a standalone image element
     case system(text: String)
+    /// A system line for THIS session only: shown like `.system`, never journaled.
+    ///
+    /// For a notice that describes what just happened rather than what the conversation
+    /// contains - "the restore was not summarized, so the model got all of it". Re-derived on
+    /// every restore, so persisting it would append a byte-identical line each time and replay
+    /// the whole pile on the next load. A host that stores `.entry` events sees nothing here,
+    /// which is the point: its journal stays the record of the conversation.
+    case transientSystem(text: String)
     case error(message: String, recoverable: Bool)
 
     /// A resumable transport reporting how far the host's persisted transcript now reaches.

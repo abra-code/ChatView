@@ -933,6 +933,19 @@ final class ChatStore: ObservableObject {
             items.append(.system(id: itemID, text: text))
             fireEntry(type: "system", id: itemID, data: ChatItem.system(id: itemID, text: text))
 
+        case .transientSystem(let text):
+            // Shown, not journaled. No `fireEntry`, deliberately - see the case's documentation:
+            // this describes the restore that just happened, and a host that stored it would
+            // accumulate one identical copy per restore and replay all of them next time.
+            //
+            // Not repeated back to back either. The same restore can be re-primed several times
+            // in one session - a cancelled or errored turn re-arms the context, and the request
+            // that rode in with the content is replayed with it - so the same sentence can arrive
+            // three times for three Stops. Once is the news; the rest is noise.
+            if case .system(_, let previous) = items.last, previous == text { return }
+            localCounter += 1
+            items.append(.system(id: "system-\(localCounter)", text: text))
+
         case .error(let message, _):
             localCounter += 1
             let itemID = "error-\(localCounter)"
@@ -1144,8 +1157,16 @@ final class ChatStore: ObservableObject {
             // a type mismatch would be pedantry: it means the same as an empty object.
             return (ask as? Bool) == true ? PrimeCondense() : nil
         }
+        // Trimmed, and empty means ABSENT rather than a request for a summarizer named "". A host
+        // that stores the user's choice as a string has an empty one before they have chosen, and
+        // forwarding that would ask the agent for a summarizer nobody named - which agents are
+        // entitled to refuse, turning "no preference" into a conversation that primes whole.
+        var backend = (body["backend"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if backend?.isEmpty == true { backend = nil }
         return PrimeCondense(keepRecentTurns: (body["keepRecentTurns"] as? NSNumber)?.intValue,
-                             maxDigestTokens: (body["maxDigestTokens"] as? NSNumber)?.intValue)
+                             maxDigestTokens: (body["maxDigestTokens"] as? NSNumber)?.intValue,
+                             backend: backend)
     }
 
     /// Reads the transient `prime` directive off a raw states["content"] value, accepting the

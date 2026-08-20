@@ -121,6 +121,10 @@ private enum EventCodec {
             return ["event": "error", "message": message, "recoverable": recoverable]
         case .system(let text):
             return ["event": "system", "text": text]
+        case .transientSystem(let text):
+            // Encoded distinctly from `.system` on purpose: the difference between them is
+            // whether a host persists it, which is exactly what a fixture replay asserts.
+            return ["event": "transientSystem", "text": text]
         case .image(let itemID, let role, let image):
             return ["event": "image", "itemID": itemID, "role": role.rawValue, "image": try jsonValue(image)]
 
@@ -243,6 +247,8 @@ private enum EventCodec {
             return .usage(try decodeModel(UsageInfo.self, from: try sub("usage")))
         case "error":
             return .error(message: try str("message"), recoverable: (dict["recoverable"] as? Bool) ?? false)
+        case "transientSystem":
+            return .transientSystem(text: try str("text"))
         case "system":
             return .system(text: try str("text"))
         case "image":
