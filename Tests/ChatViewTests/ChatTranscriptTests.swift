@@ -675,6 +675,93 @@ final class ChatAppendContextStateTests: XCTestCase {
         XCTAssertEqual(store.contextState, .pending,
                        "a message the agent was never given must not be reported as held")
     }
+
+    /// THE CASE A HOST ACTUALLY HITS: Cadabra announces "started"/"resumed" while the FIRST turn
+    /// of a conversation is streaming. `wireContext` advances only at prime, restore and turn end,
+    /// so mid-turn it is stale by construction - it does not hold the message send() just
+    /// appended. A whole-transcript comparison against it calls a marker a divergence, and the
+    /// status line goes orange in a brand-new chat where nothing is out of sync.
+    func testAppendingAMarkerDuringATurnLeavesTheContextSynced() {
+        let (store, transport, source) = primedStore()
+        restoreTwoMessages(source)
+        XCTAssertEqual(store.contextState, .synced)
+
+        store.send("and now?")                                   // the snapshot is stale from here
+        store.route(.messageStart(itemID: "a2", role: .agent))   // the turn is streaming
+        store.route(.messageDelta(itemID: "a2", text: "answering"))
+
+        source.appended = ["type": "sessionEvent",
+                           "sessionEvent": ["id": "se-1", "kind": "started",
+                                            "model": "Qwen3 4B"] as [String: Any]]
+
+        XCTAssertEqual(store.contextState, .synced,
+                       "a marker moves no wire entry, whatever the mid-turn snapshot happens to hold")
+
+        // And the cost that outlives the turn, which is the half a user notices: a pending state
+        // here sends trackContextAfterTurn down its else branch, dropping the snapshot at the end
+        // of the turn, so the next send re-primes the whole conversation for nothing.
+        store.route(.messageEnd(itemID: "a2", stopReason: "end_turn"))
+        XCTAssertEqual(store.contextState, .synced)
+        let primesBefore = transport.primeCount
+        store.send("still here")
+        XCTAssertEqual(transport.primeCount, primesBefore,
+                       "the turn grew the agent's context with the display, so nothing is re-primed")
+    }
+
+    /// The guard must not have been suppressed into uselessness: a MESSAGE the agent was never
+    /// given still has to mark the context pending, mid-turn exactly as between turns.
+    func testAppendingAMessageDuringATurnStillMarksTheContextPending() {
+        let (store, _, source) = primedStore()
+        restoreTwoMessages(source)
+        store.send("and now?")
+        store.route(.messageStart(itemID: "a2", role: .agent))
+
+        source.appended = ["type": "message",
+                           "message": ["id": "h1", "role": "agent",
+                                       "text": "never sent"] as [String: Any]]
+
+        XCTAssertEqual(store.contextState, .pending,
+                       "a line the model never saw must not be reported as held, whenever it lands")
+    }
+
+    /// The one place a SUPPRESSED pending could in principle hide a real divergence: the turn the
+    /// marker landed in never ends cleanly. It cannot, and this pins why - the suppression decides
+    /// nothing about the turn, so the cancelled turn's own bookkeeping still drops the snapshot and
+    /// the next send re-primes. A marker must not make a cancelled turn look clean.
+    func testAMarkerDuringACancelledTurnStillLeavesTheContextPending() {
+        let (store, transport, source) = primedStore()
+        restoreTwoMessages(source)
+        store.send("and now?")
+        store.route(.messageStart(itemID: "a2", role: .agent))
+
+        source.appended = ["type": "sessionEvent",
+                           "sessionEvent": ["id": "se-2", "kind": "started"] as [String: Any]]
+        XCTAssertEqual(store.contextState, .synced)
+
+        store.route(.messageEnd(itemID: "a2", stopReason: "cancelled"))
+        XCTAssertEqual(store.contextState, .pending,
+                       "the agent holds a partial exchange, and no marker can make that look clean")
+        let primesBefore = transport.primeCount
+        store.send("again")
+        XCTAssertEqual(transport.primeCount, primesBefore + 1,
+                       "an unknown context must be re-primed on the next send")
+    }
+
+    /// The boundary the new question sits on. `wireEntries` admits a message only when it carries
+    /// text a model would be given, so an EMPTY one is a `.message` that moves nothing - and a
+    /// guard written as "is this item a message" would fire on it, marking a context stale that no
+    /// transport's prime can tell apart from the one it already holds.
+    func testAppendingAnEmptyMessageLeavesTheContextSynced() {
+        let (store, _, source) = primedStore()
+        restoreTwoMessages(source)
+        XCTAssertEqual(store.contextState, .synced)
+
+        source.appended = ["type": "message",
+                           "message": ["id": "h2", "role": "agent", "text": ""] as [String: Any]]
+
+        XCTAssertEqual(store.contextState, .synced,
+                       "an empty message reaches no prime, so it cannot have moved the context")
+    }
 }
 
 private final class AppendRecordingTransport: ChatTransport, @unchecked Sendable {

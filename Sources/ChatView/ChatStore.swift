@@ -1050,9 +1050,10 @@ final class ChatStore: ObservableObject {
     /// re-prime. It is NOT otherwise a shortcut: it replays the same id and read-mark bookkeeping
     /// the other three ways into `items` perform.
     ///
-    /// A marker leaves the context indicator alone, because `wireEntries` is built from `.message`
-    /// items. That is exactly why appending a MESSAGE does not: it moves `wireEntries` while
-    /// `wireContext` stays put, so the context is marked pending and the next send re-primes.
+    /// An item that adds no wire entry leaves the context indicator alone - a session marker, and
+    /// equally a message the prime would drop anyway (empty text, or a display-only role). A
+    /// message carrying conversational text does not: it moves `wireEntries` ahead of what the
+    /// agent was told, so the context is marked pending and the next send re-primes.
     func reconcileAppendedItem(_ value: Any?) {
         guard let item = ChatItem.decode(from: value) else {
             // Warn ONCE per distinct bad value. The host bridge re-delivers this channel on every
@@ -1083,14 +1084,29 @@ final class ChatStore: ObservableObject {
         advanceLocalCounter(past: [item])
         transport?.reserveIDs(seen: [item.id])
         maybeScheduleReadMark()
-        // AND THE CONTEXT MAY NOW BE STALE. `wireEntries` is built from `.message` items, so a
-        // marker changes nothing - but this channel accepts any ChatItem, and appending a message
-        // moves the transcript ahead of what the agent holds. Left unsaid, the model answers
+        // AND THE CONTEXT MAY NOW BE STALE - but only if THIS item is one the agent was never
+        // told about, which is a question about the item's OWN wire contribution (asked through
+        // `wireEntries`, so the two stay in step if that filter ever changes). It cannot be asked
+        // of the whole transcript against `wireContext`: that snapshot advances only at prime,
+        // restore and turn end, so mid-turn it is stale by construction - it does not yet hold the
+        // optimistic message send() appended. Measured against it, a session marker that moves no
+        // wire entry at all reads as a divergence: the indicator goes orange in a brand-new chat,
+        // and trackContextAfterTurn then nils the snapshot at that turn's end, so the next send
+        // re-primes the whole conversation for nothing.
+        // The limit of asking it this way, worth knowing rather than discovering: `wireEntries` is
+        // the ACP prime's filter exactly (role local/agent, non-empty text), but the OpenAI
+        // transport maps `.remote` and `.system` to real wire roles too - so a host appending one
+        // of those DOES change what the next prime sends there, and neither this test nor the
+        // snapshot it compares against can represent it. That blindness is older than this line:
+        // the whole-transcript comparison could not see those items either.
+        //
+        // A MESSAGE CARRYING TEXT is the case this really guards: left unsaid, the model answers
         // without ever seeing a line the user is reading, the indicator keeps claiming synced, and
         // trackContextAfterTurn adopts the unsent message as held at the end of the next turn -
         // after which nothing can tell it was ever wrong. Saying `pending` costs one re-prime on
         // the next send, which is exactly what the deferred path already does.
-        if transport != nil, Self.wireEntries(from: items) != wireContext {
+        if transport != nil, !Self.wireEntries(from: [item]).isEmpty,
+           Self.wireEntries(from: items) != wireContext {
             contextState = .pending
         }
     }
