@@ -57,6 +57,9 @@ private final class FakeConfigSource: ChatContentSource {
 /// transport was built (the freeze: a frozen element must not rebuild on a later config change).
 private final class BuildCounter: @unchecked Sendable {
     var count = 0
+    /// The `model` of every config a factory was called with, in order - which is the only
+    /// outside-visible record of WHICH configs were applied and in what sequence.
+    var models: [String] = []
 }
 
 /// A no-op transport a test factory returns; its event stream never emits (the store just drains it).
@@ -93,7 +96,14 @@ private final class TransportBox: @unchecked Sendable {
 private final class InjectionEntrySink: @unchecked Sendable {
     private let lock = NSLock()
     private var jsons: [String] = []
-    func add(_ json: String) { lock.withLock { jsons.append(json) } }
+    /// What a persisting host does INSIDE the entry it is handed: writes a state back. The entry
+    /// channel is synchronous, so whatever this does happens in the middle of the branch that
+    /// fired it.
+    var onEntry: ((String) -> Void)?
+    func add(_ json: String) {
+        lock.withLock { jsons.append(json) }
+        onEntry?(json)
+    }
     func rawJSONs() -> [String] { lock.withLock { jsons } }
     /// The `"type":"..."` of every envelope, in the order they fired.
     func types() -> [String] {
@@ -633,5 +643,130 @@ final class ChatConfigInjectionTests: XCTestCase {
         XCTAssertEqual(finalized.text, "half an answer")
         XCTAssertFalse(finalized.isStreaming, "and must not come back still spinning")
         XCTAssertEqual(sink.types(), ["message"], "the host is told, once")
+    }
+
+
+    func testAHostRestoringFromAnEntryDoesNotClobberTheItemsItBringsBack() {
+        // The entry channel is synchronous: a host that answers by re-injecting states["content"]
+        // replaces `items` in the MIDDLE of the close. What was open when the pass started may be
+        // finished by the time its turn comes - and a tool call that came back COMPLETED, with its
+        // real output, must not be overwritten with "failed" and reported to the host as failed.
+        let sink = InjectionEntrySink()
+        let name = "inject-test-restore-\(UUID().uuidString)"
+        ChatTransportRegistry.shared.register(name) { _, _ in FakeInjectTransport() }
+        let source = FakeConfigSource(config: ["protocol": name, "transport": ["model": "A"]])
+        let store = makeStore(source: source, entrySink: sink)
+        store.start()
+        store.route(.messageStart(itemID: "a1", role: .agent))
+        store.route(.messageDelta(itemID: "a1", text: "partial"))
+        store.route(.toolCall(ToolCallModel(id: "tool1", title: "Read", kind: .read,
+                                            status: .inProgress, contentText: "")))
+        // A SECOND open message, after the tool call, so the restore lands while items further
+        // down the pass are still waiting their turn - which is where a stale verdict does its
+        // damage.
+        store.route(.messageStart(itemID: "a2", role: .agent))
+        store.route(.messageDelta(itemID: "a2", text: "half of the second"))
+        // The host answers the FIRST entry with the transcript as it has now persisted it: the
+        // tool call completed, and both answers final.
+        sink.onEntry = { json in
+            guard json.contains("\"type\":\"message\"") else { return }
+            MainActor.assumeIsolated {
+                sink.onEntry = nil
+                source.content = ChatTranscript(items: [
+                    .message(ChatMessage(id: "a1", role: .agent, text: "partial", isStreaming: false)),
+                    .toolCall(ToolCallModel(id: "tool1", title: "Read", kind: .read,
+                                            status: .completed, contentText: "the real output")),
+                    .message(ChatMessage(id: "a2", role: .agent, text: "the persisted answer", isStreaming: false)),
+                ])
+            }
+        }
+
+        source.config = ["protocol": name, "transport": ["model": "B"]]
+
+        guard store.items.count == 3, case .toolCall(let call) = store.items[1],
+              case .message(let second) = store.items[2] else {
+            return XCTFail("the restored transcript must be what stands: \(store.items)")
+        }
+        XCTAssertEqual(call.status, .completed, "a call the restore brought back finished must not be failed by the close")
+        XCTAssertEqual(call.contentText, "the real output", "nor have its output replaced by a reason")
+        XCTAssertEqual(second.text, "the persisted answer",
+                       "nor a message the restore brought back final be overwritten with a buffer from before it")
+        XCTAssertEqual(sink.types(), ["message"], "and the host is told about none of it a second time")
+        store.teardown()
+    }
+
+    func testAConfigInjectedFromInsideTheSwitchIsAppliedAfterIt() {
+        // The config subscription re-delivers on EVERY states change, so a host that writes any
+        // state from inside an entry lands back in reconcileConfig mid-branch. That injection is
+        // held, not dropped: if it names a different transport, the element must end up on the one
+        // the host asked for last.
+        let counter = BuildCounter()
+        let box = TransportBox()
+        let sink = InjectionEntrySink()
+        let name = "inject-test-reentrant-\(UUID().uuidString)"
+        ChatTransportRegistry.shared.register(name) { config, _ in
+            counter.count += 1
+            counter.models.append(config.settings["model"] as? String ?? "?")
+            let transport = FakeInjectTransport()
+            box.transport = transport
+            return transport
+        }
+        let source = FakeConfigSource(config: ["protocol": name, "transport": ["model": "A"]])
+        let store = makeStore(source: source, entrySink: sink)
+        store.start()
+        store.route(.messageStart(itemID: "a1", role: .agent))
+        store.route(.messageDelta(itemID: "a1", text: "partial"))
+        sink.onEntry = { _ in
+            MainActor.assumeIsolated {
+                sink.onEntry = nil
+                source.config = ["protocol": name, "transport": ["model": "C"]]
+            }
+        }
+
+        source.config = ["protocol": name, "transport": ["model": "B"]]
+
+        XCTAssertEqual(counter.models, ["A", "B", "C"],
+                       "the config that arrived mid-switch is applied after it, not dropped: \(counter.models)")
+        store.teardown()
+    }
+
+
+    func testAHostThatKeepsChangingTheConfigMidSwitchIsCappedRatherThanRecursing() {
+        // Each held injection is applied from a LOOP, not from the frame that held it: applying one
+        // fires entries into host code that can hold the next, so a recursive drain would grow the
+        // stack with the host's chattiness. A host whose configs never repeat - a nonce in the
+        // transport dict, so the dedup never catches it - would run that stack into the ground.
+        let counter = BuildCounter()
+        let sink = InjectionEntrySink()
+        let name = "inject-test-runaway-\(UUID().uuidString)"
+        ChatTransportRegistry.shared.register(name) { config, _ in
+            counter.count += 1
+            counter.models.append(config.settings["model"] as? String ?? "?")
+            return FakeInjectTransport()
+        }
+        let source = FakeConfigSource(config: ["protocol": name, "transport": ["model": "A"]])
+        let store = makeStore(source: source, entrySink: sink)
+        store.start()
+        store.route(.messageStart(itemID: "a1", role: .agent))
+        store.route(.messageDelta(itemID: "a1", text: "partial"))
+        // The host that never settles: every entry it is handed provokes a fresh transcript with
+        // an open item in it AND a config it has never sent before.
+        var round = 0
+        sink.onEntry = { _ in
+            MainActor.assumeIsolated {
+                round += 1
+                source.content = ChatTranscript(items: [
+                    .message(ChatMessage(id: "r\(round)", role: .agent, text: "open", isStreaming: true)),
+                ])
+                source.config = ["protocol": name, "transport": ["model": "round-\(round)"]]
+            }
+        }
+
+        source.config = ["protocol": name, "transport": ["model": "B"]]
+
+        XCTAssertLessThanOrEqual(counter.count, 10,
+                                 "the chase is capped: \(counter.count) transports built for \(counter.models)")
+        XCTAssertGreaterThan(counter.count, 2, "and it does chase - the held injections are applied, not dropped")
+        store.teardown()
     }
 }

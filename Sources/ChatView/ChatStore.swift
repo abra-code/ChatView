@@ -163,8 +163,10 @@ final class ChatStore: ObservableObject {
     // (not from a possibly-changed state).
     private var didConfigure = false
     /// Guards the re-configure branch against a host that re-injects a config from inside the
-    /// entries that branch fires (see reconcileConfig).
+    /// entries that branch fires, and holds that injection until the branch is done (see
+    /// reconcileConfig).
     private var isReconfiguring = false
+    private var deferredConfigInjection: Any?
     private var resolvedTransportConfig: ChatTransportConfig?
     private var configCancellable: AnyCancellable?
 
@@ -404,17 +406,51 @@ final class ChatStore: ObservableObject {
             return
         }
         // The re-configure branch calls out to the host synchronously (the entries it fires reach
-        // the host's handler inline), and a host that answers by re-injecting states["config"]
-        // would land back in here with the old config still recorded as the resolved one: the
-        // dedup would miss, the inner call would attach a transport, and the outer frame would
-        // then stop the transport it had just attached and replace it with another. One
-        // re-configuration at a time.
+        // the host's handler inline), and a host that answers by writing ANY state re-delivers
+        // this channel - the subscription fires on every states change, not only on a config one.
+        // Landing back in here mid-branch would find the old config still recorded as the resolved
+        // one: the dedup would miss, the inner call would attach a transport, and the outer frame
+        // would then stop the transport it had just attached and replace it with another.
+        //
+        // So one re-configuration at a time, and the reentrant value is HELD rather than dropped.
+        // Ordinarily it is the same config this frame is already applying and the dedup discards
+        // it a moment later; when it is genuinely a new one, deferring it is the difference
+        // between the element ending up on the config the host last asked for and the element
+        // silently keeping the previous one.
         guard !isReconfiguring else {
-            logger.log("Chat config re-injected while a re-configuration was in flight; ignoring the reentrant injection", .warning)
+            logger.log("Chat config re-injected during a re-configuration; holding it until this one finishes", .verbose)
+            deferredConfigInjection = raw
             return
         }
         isReconfiguring = true
         defer { isReconfiguring = false }
+        applyTransportConfig(raw)
+        // The held injections, drained ITERATIVELY and under a cap. Applying one fires entries into
+        // host code that can hold the next, so a recursive drain is a stack that grows with a
+        // host's chattiness: one that answers every entry with a config carrying anything varying
+        // (a nonce, a timestamp) never repeats itself, never hits the dedup, and runs the stack
+        // into the ground. A cap turns a host stuck in that loop into one log line.
+        var applied = 0
+        while let deferred = deferredConfigInjection {
+            deferredConfigInjection = nil
+            applied += 1
+            if applied > Self.maxHeldConfigInjections {
+                logger.log("Chat config kept changing during its own re-configuration; ignoring further injections", .warning)
+                break
+            }
+            applyTransportConfig(deferred)
+        }
+    }
+
+    /// How many times one re-configuration will chase a config the host injected from inside it.
+    /// Generous for any real host - a re-injection per fired entry is already unusual - and finite
+    /// for one that has no fixed point.
+    private static let maxHeldConfigInjections = 8
+
+    /// Applies one config: dedup, viability, and (when the element already had one) the
+    /// re-configuration itself. Only ever called from reconcileConfig, which owns the guard that
+    /// keeps two of these from overlapping.
+    private func applyTransportConfig(_ raw: Any?) {
         guard let (protocolName, transportSettings) = Self.parseTransportConfig(raw) else {
             return   // no config object yet (states["config"] absent / not a dict) - stay inert
         }
@@ -1634,10 +1670,12 @@ final class ChatStore: ObservableObject {
     /// (Cadabra's history_store.py does) - closing all the thoughts and then all the tool calls
     /// would reopen the conversation with a tool card underneath the answer it preceded on screen.
     ///
-    /// The work is COLLECTED BY ID first and each item re-found before it is closed. `fireEntry`
-    /// calls into host code synchronously, and a host that answers by re-injecting states can
-    /// replace `items` underneath this loop; a saved index would then name a different item, or
-    /// none at all.
+    /// The work is COLLECTED BY ID first, and each item is re-found AND RE-CHECKED before it is
+    /// closed. `fireEntry` calls into host code synchronously, and a host that answers by
+    /// re-injecting states can replace `items` underneath this loop: a saved index would then name
+    /// a different item or none at all, and a saved verdict would close an item that has since
+    /// arrived finished - writing "failed" over a tool call the restore brought back completed,
+    /// with its output, and telling the host so.
     ///
     /// Messages are closed with a nil stopReason: each entry has to fire, but the turn-end
     /// bookkeeping must run once, not once per item. The callers' own clears and `attach()`'s
@@ -1672,14 +1710,16 @@ final class ChatStore: ObservableObject {
                 }
                 closeThought(at: index)
             case .message(let id):
-                guard let index = messageIndex(id) else {
+                guard let index = messageIndex(id), case .message(let current) = items[index],
+                      current.isStreaming || streamBuffers[id] != nil else {
                     streamBuffers[id] = nil
                     continue
                 }
                 closeStreamingItem(at: index, id: id)
                 emit(.messageFinalized)
             case .toolCall(let id):
-                guard let index = toolCallIndex(id), case .toolCall(var call) = items[index] else {
+                guard let index = toolCallIndex(id), case .toolCall(var call) = items[index],
+                      call.status == .pending || call.status == .inProgress else {
                     continue
                 }
                 call.status = .failed
@@ -1721,6 +1761,10 @@ final class ChatStore: ObservableObject {
     /// "thought" type). The half of finalizeMessage that touches the item, so a
     /// turn closed item by item does exactly what a `.messageEnd` does.
     private func closeStreamingItem(at index: Int, id itemID: String) {
+        guard index < items.count else {
+            streamBuffers[itemID] = nil
+            return
+        }
         let finalText = streamBuffers.removeValue(forKey: itemID)
         mutateStreamingText(at: index) {
             if let finalText {
