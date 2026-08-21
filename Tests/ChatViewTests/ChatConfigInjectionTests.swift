@@ -88,13 +88,43 @@ private final class TransportBox: @unchecked Sendable {
     var transport: FakeInjectTransport?
 }
 
+/// Collects the JSON envelopes carried by `.entry` host events - the channel a persisting host
+/// journals from, and the one a re-configuration mid-answer must not leave a hole in.
+private final class InjectionEntrySink: @unchecked Sendable {
+    private let lock = NSLock()
+    private var jsons: [String] = []
+    func add(_ json: String) { lock.withLock { jsons.append(json) } }
+    func rawJSONs() -> [String] { lock.withLock { jsons } }
+    /// The `"type":"..."` of every envelope, in the order they fired.
+    func types() -> [String] {
+        rawJSONs().compactMap { json in
+            guard let data = json.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return nil
+            }
+            return object["type"] as? String
+        }
+    }
+}
+
 @MainActor
 final class ChatConfigInjectionTests: XCTestCase {
 
-    private func makeStore(properties: [String: Any] = [:], source: FakeConfigSource) -> ChatStore {
+    private func makeStore(properties: [String: Any] = [:], source: FakeConfigSource,
+                          entrySink: InjectionEntrySink? = nil) -> ChatStore {
         let logger = InjectionTestLogger()
-        return ChatStore(config: ChatConfiguration(dictionary: properties, logger: logger),
-                         logger: logger, contentSource: source)
+        var configuration = ChatConfiguration(dictionary: properties, logger: logger)
+        configuration.emitsEntryEvents = entrySink != nil
+        var hostEvents: ChatHostEventSink?
+        if let entrySink {
+            hostEvents = { event in
+                if case .entry(let json) = event {
+                    entrySink.add(json)
+                }
+            }
+        }
+        return ChatStore(config: configuration, logger: logger, contentSource: source,
+                         hostEvents: hostEvents)
     }
 
     // NOTE: ChatStore holds `contentSource` WEAKLY (the engine's ViewModel owns the store's lifetime,
@@ -433,5 +463,175 @@ final class ChatConfigInjectionTests: XCTestCase {
         XCTAssertEqual(primed.map(\.id), ["u1"],
                        "attach() primes the freshly built transport from the transcript restored before it existed")
         store.teardown()
+    }
+
+    // MARK: - A re-configuration finalizes the turn it interrupts
+
+    func testAConfigChangeMidAnswerFinalizesThePartialAnswerFirst() {
+        // The host cannot see a turn in flight - nothing on its channel says so - and the agent
+        // writing this answer is about to be SIGTERMed, so no messageEnd is ever coming for it.
+        // What the user has already read has to survive into the journal and into what the new
+        // agent is primed with, or the transcript and the record disagree about a switch the user
+        // watched happen.
+        let counter = BuildCounter()
+        let box = TransportBox()
+        let sink = InjectionEntrySink()
+        let name = "inject-test-midanswer-\(UUID().uuidString)"
+        ChatTransportRegistry.shared.register(name) { _, _ in
+            counter.count += 1
+            let transport = FakeInjectTransport()
+            box.transport = transport
+            return transport
+        }
+        let source = FakeConfigSource(config: ["protocol": name, "transport": ["model": "A"]])
+        let store = makeStore(source: source, entrySink: sink)
+        store.start()
+        store.route(.messageStart(itemID: "a1", role: .agent))
+        store.route(.messageDelta(itemID: "a1", text: "partial"))
+        XCTAssertTrue(store.isStreaming, "the turn is in flight when the switch arrives")
+        XCTAssertEqual(sink.types(), [], "nothing has been journaled yet: the answer is still streaming")
+
+        source.config = ["protocol": name, "transport": ["model": "B"]]
+
+        XCTAssertEqual(counter.count, 2, "the changed config still builds the new transport")
+        guard case .message(let finalized)? = store.items.first(where: {
+            if case .message(let message) = $0 { return message.id == "a1" }
+            return false
+        }) else {
+            return XCTFail("the partial answer must still be in the transcript: \(store.items)")
+        }
+        XCTAssertEqual(finalized.text, "partial", "the buffered text is flushed into the item, not dropped")
+        XCTAssertFalse(finalized.isStreaming, "and the item stops streaming: no spinner under the new transport")
+        XCTAssertEqual(sink.types(), ["message"], "exactly one entry fires for the interrupted answer")
+        XCTAssertTrue(sink.rawJSONs().first?.contains("partial") == true,
+                      "the entry carries the text the user read: \(sink.rawJSONs())")
+        XCTAssertFalse(store.isStreaming)
+        XCTAssertFalse(store.awaitingReply)
+        XCTAssertEqual(box.transport?.primedHistories.last?.map(\.id), ["a1"],
+                       "the new transport is primed with the interrupted turn")
+        XCTAssertEqual(box.transport?.primedHistories.last?.map(\.text), ["partial"],
+                       "and with its TEXT: the id alone is there whether the answer was finalized or dropped")
+        store.teardown()
+    }
+
+    func testAConfigChangeBetweenTurnsFiresNoEntry() {
+        // The ordinary switch, and the one that must stay byte-identical to what it always did:
+        // nothing is streaming, so nothing is finalized and no entry is invented.
+        let box = TransportBox()
+        let sink = InjectionEntrySink()
+        let name = "inject-test-betweenturns-\(UUID().uuidString)"
+        ChatTransportRegistry.shared.register(name) { _, _ in
+            let transport = FakeInjectTransport()
+            box.transport = transport
+            return transport
+        }
+        let source = FakeConfigSource(config: ["protocol": name, "transport": ["model": "A"]])
+        let store = makeStore(source: source, entrySink: sink)
+        store.start()
+        store.route(.messageStart(itemID: "a1", role: .agent))
+        store.route(.messageDelta(itemID: "a1", text: "done"))
+        store.route(.messageEnd(itemID: "a1", stopReason: "end_turn"))
+        XCTAssertEqual(sink.types(), ["message"], "the finished turn journaled itself")
+
+        source.config = ["protocol": name, "transport": ["model": "B"]]
+
+        XCTAssertEqual(sink.types(), ["message"], "the switch adds no second entry for an already-closed turn")
+        XCTAssertEqual(store.items.count, 1, "and invents no item")
+        store.teardown()
+    }
+
+    func testAThoughtOnlyTurnIsClosedByAConfigChange() {
+        // A thought has no end event of its own - it ends when the next item or the turn does -
+        // so a switch during one is the case a message-shaped finalization would miss entirely.
+        let sink = InjectionEntrySink()
+        let name = "inject-test-thought-\(UUID().uuidString)"
+        ChatTransportRegistry.shared.register(name) { _, _ in FakeInjectTransport() }
+        let source = FakeConfigSource(config: ["protocol": name, "transport": ["model": "A"]])
+        let store = makeStore(source: source, entrySink: sink)
+        store.start()
+        store.route(.thoughtDelta(itemID: "t1", text: "thinking it over"))
+
+        source.config = ["protocol": name, "transport": ["model": "B"]]
+
+        guard case .thought(let thought)? = store.items.first else {
+            return XCTFail("the thought must still be in the transcript: \(store.items)")
+        }
+        XCTAssertEqual(thought.text, "thinking it over", "its buffered text is applied")
+        XCTAssertFalse(thought.isStreaming, "and it stops streaming")
+        XCTAssertEqual(sink.types(), ["thought"], "the thought's entry fires, once")
+        store.teardown()
+    }
+
+    func testAnOpenToolCallIsFailedByAConfigChange() {
+        // The card spins until something terminal reaches it, and the agent that would have sent
+        // that update is gone. Failing it is the honest end: the call did happen, and it did not
+        // finish.
+        let sink = InjectionEntrySink()
+        let name = "inject-test-toolcall-\(UUID().uuidString)"
+        ChatTransportRegistry.shared.register(name) { _, _ in FakeInjectTransport() }
+        let source = FakeConfigSource(config: ["protocol": name, "transport": ["model": "A"]])
+        let store = makeStore(source: source, entrySink: sink)
+        store.start()
+        store.route(.toolCall(ToolCallModel(id: "tool1", title: "Read", kind: .read,
+                                            status: .inProgress, contentText: "")))
+        XCTAssertEqual(sink.types(), [], "a running call journals nothing yet")
+
+        source.config = ["protocol": name, "transport": ["model": "B"]]
+
+        guard case .toolCall(let call)? = store.items.first else {
+            return XCTFail("the tool call must still be in the transcript: \(store.items)")
+        }
+        XCTAssertEqual(call.status, .failed, "the card stops spinning")
+        XCTAssertFalse(call.contentText.isEmpty, "and says why")
+        XCTAssertEqual(sink.types(), ["toolCall"], "its entry fires so the journal has the call")
+        store.teardown()
+    }
+
+    func testAnInterruptedTurnIsClosedInTranscriptOrder() {
+        // A persisting host folds entries in FIRST-SEEN order, so closing all the thoughts and
+        // then all the tool calls would reopen the conversation with the tool card underneath the
+        // answer that came after it on screen.
+        let sink = InjectionEntrySink()
+        let name = "inject-test-order-\(UUID().uuidString)"
+        ChatTransportRegistry.shared.register(name) { _, _ in FakeInjectTransport() }
+        let source = FakeConfigSource(config: ["protocol": name, "transport": ["model": "A"]])
+        let store = makeStore(source: source, entrySink: sink)
+        store.start()
+        // A tool call still running with a thought opened after it - an ordinary ACP sequence, and
+        // the one arrangement that tells an ordered close from a kind-ordered one. (A messageStart
+        // cannot follow: routing one closes open thoughts on the spot, before any switch.)
+        store.route(.toolCall(ToolCallModel(id: "tool1", title: "Read", kind: .read,
+                                            status: .inProgress, contentText: "")))
+        store.route(.thoughtDelta(itemID: "t1", text: "still going"))
+        XCTAssertEqual(sink.types(), [], "neither has ended on its own")
+
+        source.config = ["protocol": name, "transport": ["model": "B"]]
+
+        XCTAssertEqual(sink.types(), ["toolCall", "thought"],
+                       "the entries fire in the order the items sit in the transcript, not by kind")
+        store.teardown()
+    }
+
+    func testTeardownMidAnswerFinalizesItToo() {
+        // The view disappearing is the same abandonment as a switch - the transport is stopped and
+        // the turn will never end - and the store outlives it, so the conversation the user comes
+        // back to is the one this leaves behind.
+        let sink = InjectionEntrySink()
+        let name = "inject-test-teardown-\(UUID().uuidString)"
+        ChatTransportRegistry.shared.register(name) { _, _ in FakeInjectTransport() }
+        let source = FakeConfigSource(config: ["protocol": name, "transport": ["model": "A"]])
+        let store = makeStore(source: source, entrySink: sink)
+        store.start()
+        store.route(.messageStart(itemID: "a1", role: .agent))
+        store.route(.messageDelta(itemID: "a1", text: "half an answer"))
+
+        store.teardown()
+
+        guard case .message(let finalized)? = store.items.first else {
+            return XCTFail("the partial answer must survive the teardown: \(store.items)")
+        }
+        XCTAssertEqual(finalized.text, "half an answer")
+        XCTAssertFalse(finalized.isStreaming, "and must not come back still spinning")
+        XCTAssertEqual(sink.types(), ["message"], "the host is told, once")
     }
 }

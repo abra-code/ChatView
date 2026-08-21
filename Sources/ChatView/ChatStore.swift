@@ -162,6 +162,9 @@ final class ChatStore: ObservableObject {
     // loaded items). On reappearance the torn-down transport is rebuilt from the applied decision
     // (not from a possibly-changed state).
     private var didConfigure = false
+    /// Guards the re-configure branch against a host that re-injects a config from inside the
+    /// entries that branch fires (see reconcileConfig).
+    private var isReconfiguring = false
     private var resolvedTransportConfig: ChatTransportConfig?
     private var configCancellable: AnyCancellable?
 
@@ -383,12 +386,13 @@ final class ChatStore: ObservableObject {
         }
     }
 
-    // MARK: - Config injection (states["config"]) -> deferred, frozen transport
+    // MARK: - Config injection (states["config"]) -> deferred build, in-place re-configure
 
     /// Handles a host-injected operational config from states["config"]. Builds the transport the
     /// FIRST time the config resolves to a viable one; after that an IDENTICAL config is ignored
     /// (the subscription re-delivers the current value on every states change), while a DIFFERENT
-    /// viable config RE-CONFIGURES: the old transport is torn down and the new one attached, and
+    /// viable config RE-CONFIGURES: any turn in flight is closed first (its partial answer kept,
+    /// its entries fired), then the old transport is torn down and the new one attached, and
     /// attach() re-seeds the new transport's wire history from the loaded items - this is the
     /// host-driven in-place switch (e.g. MLXChat re-injects the transport argv with a new --model,
     /// and the conversation carries over via the prime). A config that is not yet viable (e.g.
@@ -399,6 +403,18 @@ final class ChatStore: ObservableObject {
         guard !config.readOnly else {
             return
         }
+        // The re-configure branch calls out to the host synchronously (the entries it fires reach
+        // the host's handler inline), and a host that answers by re-injecting states["config"]
+        // would land back in here with the old config still recorded as the resolved one: the
+        // dedup would miss, the inner call would attach a transport, and the outer frame would
+        // then stop the transport it had just attached and replace it with another. One
+        // re-configuration at a time.
+        guard !isReconfiguring else {
+            logger.log("Chat config re-injected while a re-configuration was in flight; ignoring the reentrant injection", .warning)
+            return
+        }
+        isReconfiguring = true
+        defer { isReconfiguring = false }
         guard let (protocolName, transportSettings) = Self.parseTransportConfig(raw) else {
             return   // no config object yet (states["config"] absent / not a dict) - stay inert
         }
@@ -423,6 +439,15 @@ final class ChatStore: ObservableObject {
             logger.log("Chat config changed; re-configuring the transport (protocol '\(protocolName)')", .verbose)
             eventTask?.cancel()
             eventTask = nil
+            // CLOSE THE TURN THIS INTERRUPTS, FIRST. The host that re-injects a config cannot see
+            // whether a turn is in flight - there is no such event on the host channel - so this
+            // arrives mid-answer as readily as between turns, and the agent that was writing that
+            // answer is about to be stopped, so no `.messageEnd` is ever coming for it. Clearing
+            // the buffers below without finalizing would drop text the user has already READ off
+            // the screen and fire no entry for it, leaving a persisting host's journal disagreeing
+            // with the transcript it just showed - and the new transport, primed from `items`
+            // immediately afterwards, would start from that same shortened conversation.
+            closeInterruptedTurn(reason: "The conversation was handed to another agent before this finished.")
             streamBuffers.removeAll()
             pendingPermissions.removeAll()
             isStreaming = false
@@ -486,6 +511,13 @@ final class ChatStore: ObservableObject {
         eventTask = Task { [weak self] in
             await transport.start()
             for await event in transport.events {
+                // The task is cancelled when this transport is abandoned, but an event already
+                // taken from the stream would still be routed - into the store the NEW transport
+                // now owns, which is a duplicate entry at best and a turn-end bookkeeping run
+                // against the wrong session at worst.
+                if Task.isCancelled {
+                    break
+                }
                 self?.route(event)
             }
         }
@@ -795,6 +827,12 @@ final class ChatStore: ObservableObject {
         leadCancellable = nil
         configCancellable?.cancel()
         configCancellable = nil
+        // The same close a re-configuration performs, for the same reason: the transport is being
+        // stopped below, so nothing will ever end the turn it was in the middle of. The store is a
+        // @StateObject and outlives the disappear, so what is dropped here is dropped from a
+        // conversation the user comes back to - and start() re-primes the rebuilt transport from
+        // exactly these items.
+        closeInterruptedTurn(reason: "The conversation was closed before this finished.")
         streamBuffers.removeAll()
         pendingPermissions.removeAll()
         scheduler.cancel(Self.readMarkKey)
@@ -860,32 +898,7 @@ final class ChatStore: ObservableObject {
             }
 
         case .messageEnd(let itemID, let stopReason):
-            // Final flush is immediate (do not wait for the coalescing tick), then finalize.
-            finalizeOpenThoughts()
-            let finalText = streamBuffers[itemID]
-            streamBuffers[itemID] = nil
-            if let index = messageIndex(itemID) {
-                mutateStreamingText(at: index) {
-                    if let finalText {
-                        $0.text = finalText
-                    }
-                    $0.isStreaming = false
-                }
-                if case .message(let finalized) = items[index] {
-                    fireEntry(type: "message", id: itemID, data: ChatItem.message(finalized))
-                }
-            }
-            emit(.messageFinalized)
-            // A nil stopReason closes only this message (a segmented transport - ACP -
-            // interleaves tool calls mid-turn). A non-nil stopReason ends the whole turn:
-            // streaming state clears, and a permission request the turn abandoned (e.g.
-            // on cancel) is moot.
-            if let stopReason {
-                isStreaming = false
-                awaitingReply = false
-                pendingPermissions.removeAll()
-                trackContextAfterTurn(stopReason: stopReason)
-            }
+            finalizeMessage(itemID, stopReason: stopReason)
 
         case .thoughtDelta(let itemID, let text):
             if config.surfaces.thoughts == .hidden {
@@ -1610,21 +1623,138 @@ final class ChatStore: ObservableObject {
         }
     }
 
+    /// Closes every item a turn left open, for a turn nobody will ever end: the agent that was
+    /// writing it is being stopped (a re-configuration, or teardown), so no terminal event is
+    /// coming. Streaming thoughts and messages are finalized with their buffered text and their
+    /// entries; unfinished tool calls are failed with `reason`, so the card stops spinning and the
+    /// journal has the call that did happen. Pending permissions need nothing: a
+    /// `.permissionRequest` appends no item, and both callers clear the list.
+    ///
+    /// IN TRANSCRIPT ORDER, one pass, because a persisting host folds entries in first-seen order
+    /// (Cadabra's history_store.py does) - closing all the thoughts and then all the tool calls
+    /// would reopen the conversation with a tool card underneath the answer it preceded on screen.
+    ///
+    /// The work is COLLECTED BY ID first and each item re-found before it is closed. `fireEntry`
+    /// calls into host code synchronously, and a host that answers by re-injecting states can
+    /// replace `items` underneath this loop; a saved index would then name a different item, or
+    /// none at all.
+    ///
+    /// Messages are closed with a nil stopReason: each entry has to fire, but the turn-end
+    /// bookkeeping must run once, not once per item. The callers' own clears and `attach()`'s
+    /// reset (wireContext, supersededTurnPending) are that end.
+    private func closeInterruptedTurn(reason: String) {
+        enum OpenItem {
+            case thought(String)
+            case message(String)
+            case toolCall(String)
+        }
+        let open: [OpenItem] = items.compactMap { item in
+            switch item {
+            case .thought(let thought):
+                return thought.isStreaming ? .thought(thought.id) : nil
+            case .message(let message):
+                // A message can be open without the flag: the coalescing tick applies
+                // streamBuffers into items ~50 ms behind the deltas, so the buffer can hold
+                // exactly the text this exists to save.
+                return message.isStreaming || streamBuffers[message.id] != nil ? .message(message.id) : nil
+            case .toolCall(let call):
+                return call.status == .pending || call.status == .inProgress ? .toolCall(call.id) : nil
+            default:
+                return nil
+            }
+        }
+        for entry in open {
+            switch entry {
+            case .thought(let id):
+                guard let index = messageIndex(id) else {
+                    streamBuffers[id] = nil
+                    continue
+                }
+                closeThought(at: index)
+            case .message(let id):
+                guard let index = messageIndex(id) else {
+                    streamBuffers[id] = nil
+                    continue
+                }
+                closeStreamingItem(at: index, id: id)
+                emit(.messageFinalized)
+            case .toolCall(let id):
+                guard let index = toolCallIndex(id), case .toolCall(var call) = items[index] else {
+                    continue
+                }
+                call.status = .failed
+                if call.contentText.isEmpty {
+                    call.contentText = reason
+                }
+                items[index] = .toolCall(call)
+                fireEntryForCompletedToolCall(call)
+            }
+        }
+    }
+
+    /// Closes one streaming message: applies its buffered text, clears the streaming flag and
+    /// fires its "message" entry - the transport's `.messageEnd`, and the same closing a
+    /// re-configuration performs for a turn nobody will ever end (see reconcileConfig).
+    ///
+    /// A nil stopReason closes only this message (a segmented transport - ACP - interleaves tool
+    /// calls mid-turn). A non-nil one ends the whole TURN: streaming state clears, a permission
+    /// request the turn abandoned is moot, and the context bookkeeping runs once.
+    private func finalizeMessage(_ itemID: String, stopReason: String?) {
+        // Final flush is immediate (do not wait for the coalescing tick), then finalize.
+        finalizeOpenThoughts()
+        if let index = messageIndex(itemID) {
+            closeStreamingItem(at: index, id: itemID)
+        } else {
+            streamBuffers[itemID] = nil
+        }
+        emit(.messageFinalized)
+        if let stopReason {
+            isStreaming = false
+            awaitingReply = false
+            pendingPermissions.removeAll()
+            trackContextAfterTurn(stopReason: stopReason)
+        }
+    }
+
+    /// Applies one streaming item's buffered text, clears its streaming flag and fires its
+    /// "message" entry if it is a message (a thought is closed by closeThought, which fires the
+    /// "thought" type). The half of finalizeMessage that touches the item, so a
+    /// turn closed item by item does exactly what a `.messageEnd` does.
+    private func closeStreamingItem(at index: Int, id itemID: String) {
+        let finalText = streamBuffers.removeValue(forKey: itemID)
+        mutateStreamingText(at: index) {
+            if let finalText {
+                $0.text = finalText
+            }
+            $0.isStreaming = false
+        }
+        if case .message(let finalized) = items[index] {
+            fireEntry(type: "message", id: itemID, data: ChatItem.message(finalized))
+        }
+    }
+
     /// Closes every still-streaming thought: applies its buffered text and clears the
     /// streaming flag. A thought has no explicit end event - it ends when the next
     /// item (message, tool call, permission request) begins, or when the turn does.
     private func finalizeOpenThoughts() {
         for index in items.indices {
-            guard case .thought(var thought) = items[index], thought.isStreaming else {
-                continue
-            }
-            if let buffered = streamBuffers.removeValue(forKey: thought.id) {
-                thought.text = buffered
-            }
-            thought.isStreaming = false
-            items[index] = .thought(thought)
-            fireEntry(type: "thought", id: thought.id, data: ChatItem.thought(thought))
+            closeThought(at: index)
         }
+    }
+
+    /// Closes ONE streaming thought: applies its buffered text, clears the flag, fires its entry.
+    /// A no-op for any other item, and for an index the transcript no longer has - `fireEntry`
+    /// reaches host code that can replace `items` while a sweep is walking it.
+    private func closeThought(at index: Int) {
+        guard index < items.count, case .thought(var thought) = items[index], thought.isStreaming else {
+            return
+        }
+        if let buffered = streamBuffers.removeValue(forKey: thought.id) {
+            thought.text = buffered
+        }
+        thought.isStreaming = false
+        items[index] = .thought(thought)
+        fireEntry(type: "thought", id: thought.id, data: ChatItem.thought(thought))
     }
 
     // MARK: - Helpers
