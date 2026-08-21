@@ -1089,6 +1089,51 @@ public extension ChatItem {
     }
 }
 
+extension ChatItem {
+    /// This item carrying `stamp` as its timestamp if it arrived without one, for every kind that
+    /// has a timestamp to carry. An item that already has one keeps it, and the kinds that have
+    /// none (tool calls, images, system and error lines) come back unchanged.
+    ///
+    /// For the lead channel, which stamps a held item with the moment it is placed: the host hands
+    /// the item over when it learns the line will be needed, and that can be long before the user
+    /// types. Kept beside the structs rather than in the store, because a field added to one of
+    /// them is a field this has to be taught to copy.
+    func stamped(ifUnstamped stamp: String) -> ChatItem {
+        switch self {
+        case .message(var message):
+            guard message.timestamp == nil else { return self }
+            message.timestamp = stamp
+            return .message(message)
+        case .thought(var thought):
+            guard thought.timestamp == nil else { return self }
+            thought.timestamp = stamp
+            return .thought(thought)
+        case .file(let file):
+            guard file.timestamp == nil else { return self }
+            return .file(ChatFile(id: file.id, role: file.role, senderID: file.senderID,
+                                  senderName: file.senderName, timestamp: stamp, status: file.status,
+                                  name: file.name, sizeBytes: file.sizeBytes, url: file.url,
+                                  kind: file.kind, durationSeconds: file.durationSeconds,
+                                  transferStatus: file.transferStatus, progress: file.progress))
+        case .memberEvent(let event):
+            guard event.timestamp == nil else { return self }
+            return .memberEvent(MemberEvent(id: event.id, timestamp: stamp, kind: event.kind,
+                                            actorName: event.actorName, subjectName: event.subjectName,
+                                            detail: event.detail))
+        case .callEvent(let event):
+            guard event.timestamp == nil else { return self }
+            return .callEvent(CallEvent(id: event.id, timestamp: stamp, kind: event.kind,
+                                        durationSeconds: event.durationSeconds, isVideo: event.isVideo))
+        case .sessionEvent(let event):
+            guard event.timestamp == nil else { return self }
+            return .sessionEvent(SessionEvent(id: event.id, kind: event.kind, timestamp: stamp,
+                                              model: event.model, digest: event.digest))
+        case .toolCall, .image, .system, .error:
+            return self
+        }
+    }
+}
+
 /// A `reportsConnectionState` transport's link state, emitted via `.connectionStateChanged`.
 /// The composer gates on `connected`; every other state disables it (with a one-line banner).
 /// A transport that never reports leaves the composer un-gated.

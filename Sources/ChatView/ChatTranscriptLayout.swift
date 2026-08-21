@@ -23,8 +23,16 @@ enum ChatTimestamp {
         return isoPlain.date(from: string)
     }
 
-    // ISO8601DateFormatter is not Sendable, but once configured its date(from:) parsing is
-    // thread-safe (read-only use), so a shared instance is safe to reuse across contexts.
+    /// The wire form of a moment: RFC 3339 in UTC to the second ("2026-08-21T06:55:12Z") - the
+    /// form `parse` reads back, and the form a host's own stamps take, so a line the store stamps
+    /// and a line the host stamps are told apart by nothing.
+    static func format(_ date: Date) -> String {
+        isoPlain.string(from: date)
+    }
+
+    // ISO8601DateFormatter is not Sendable, but once configured its date(from:) parsing and
+    // string(from:) formatting are thread-safe (read-only use), so a shared instance is safe to
+    // reuse across contexts.
     nonisolated(unsafe) private static let isoFractional: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

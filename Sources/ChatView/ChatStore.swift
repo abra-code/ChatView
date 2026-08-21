@@ -49,10 +49,42 @@ public protocol ChatContentSource: AnyObject {
     ///
     /// Defaulted to a channel that never delivers, so existing hosts compile unchanged.
     func observeChatAppend(_ handler: @escaping (Any?) -> Void) -> AnyCancellable
+
+    /// Observes the lead channel: items HELD until the user sends, then placed in front of that
+    /// message. One `ChatItem` JSON per line, and the value is the whole waiting list - a host
+    /// REPLACES it rather than adding to it, and an empty value means nothing is waiting.
+    ///
+    /// The append channel cannot serve what this is for. A session marker naming the model that
+    /// is about to answer INTRODUCES the message the user is about to send, and a host learns
+    /// that message exists only when its entry finalizes - by which time it has been on screen
+    /// since the user pressed Return, so appending puts the marker underneath the line it was
+    /// meant to introduce. There is no "insert before" and this is not one: what was missing is a
+    /// way to say "when there is a next message, put this in front of it".
+    ///
+    /// THE WAIT IS THE POINT, and it is not something a host can arrange by appending EARLY
+    /// instead. A conversation the user opened and read is not a conversation resumed, so a marker
+    /// shown when the transcript was displayed announces a handover that never happened - once per
+    /// row the user clicks through. Held here, the line exists only if a message follows it.
+    ///
+    /// IT FIRES NO ENTRY OF ITS OWN, BUT THE MESSAGE IT LEADS REPORTS IT: the `.entry` envelope of
+    /// that message carries the placed items under `lead`, as placed. That is how a host that
+    /// persists entries learns the two things it cannot know from its own copy - THAT the line was
+    /// placed (a held line is for a message that may never come) and WHEN. An item handed over
+    /// without a timestamp is stamped with the moment it is placed: the host hands it over when it
+    /// learns the line will be needed, which can be an hour before the user types, and the line
+    /// says what happened when the message was sent. Only the send knows that moment. A host that
+    /// stamps its items keeps its stamps - the rule is about the field being empty, not about who
+    /// owns it.
+    ///
+    /// Defaulted to a channel that never delivers, so existing hosts compile unchanged.
+    func observeChatLead(_ handler: @escaping (Any?) -> Void) -> AnyCancellable
 }
 
 public extension ChatContentSource {
     func observeChatAppend(_ handler: @escaping (Any?) -> Void) -> AnyCancellable {
+        AnyCancellable {}
+    }
+    func observeChatLead(_ handler: @escaping (Any?) -> Void) -> AnyCancellable {
         AnyCancellable {}
     }
 }
@@ -151,9 +183,26 @@ final class ChatStore: ObservableObject {
     // The ids appended through the append channel, so the subscription's immediate delivery of a
     // value already applied (a reappearance re-subscribes) does not double it.
     private var appendedItemIDs: Set<String> = []
+    private var leadCancellable: AnyCancellable?
+    // What the lead channel is holding for the next message: the host's current list, minus
+    // anything already promoted out of it. Mirrors the channel rather than accumulating from it,
+    // so a re-delivery of an unchanged value (the bridge republishes every channel on any state
+    // change) recomputes the same list instead of doubling it.
+    private var leadItems: [ChatItem] = []
+    // The ids already placed in front of a message, and NEVER FORGOTTEN - unlike appendedItemIDs,
+    // which a restore clears. The two channels rest differently: a host parks the append channel
+    // empty after each write, while the lead channel goes on holding what it is waiting to place,
+    // so the resting value is re-delivered long after the send that consumed it. Clearing these on
+    // restore would let that re-delivery re-arm a marker already in the transcript, and put it in
+    // front of the NEXT message too.
+    private var promotedLeadIDs: Set<String> = []
+    // The moment a held item is stamped with when it is placed (see promoteLeadItems). A seam
+    // rather than a call to Date(), so a test can pin the stamp it expects to see in the entry.
+    var now: () -> Date = { Date() }
     // The last value each channel rejected, so a re-delivered bad value warns once rather than
     // once per unrelated state change.
     private var lastRejectedAppend: String?
+    private var lastRejectedLead: String?
     private var lastRejectedContent: String?
     private var entrySequence = 0
     // Transient restore directive riding on the injected content JSON (not part of the
@@ -298,6 +347,15 @@ final class ChatStore: ObservableObject {
         if appendCancellable == nil, let contentSource {
             appendCancellable = contentSource.observeChatAppend { [weak self] value in
                 self?.reconcileAppendedItem(value)
+            }
+        }
+
+        // The lead channel: what to place in front of the next message this user sends. Subscribed
+        // beside the append channel and for the same reason - it costs one sink and no transport
+        // traffic - though in readOnly it can only ever hold, there being no composer to send from.
+        if leadCancellable == nil, let contentSource {
+            leadCancellable = contentSource.observeChatLead { [weak self] value in
+                self?.reconcileLeadItems(value)
             }
         }
 
@@ -506,6 +564,10 @@ final class ChatStore: ObservableObject {
     /// send). When the transport backs read receipts, the optimistic message starts at `.sending` so
     /// the delivery ladder shows; otherwise it carries no status (v1 / agent transports unchanged).
     func send(_ text: String, replyTo: String? = nil) {
+        // Whatever the host is holding to introduce this message goes in first - the one moment at
+        // which "in front of the next message" is a place that exists. See observeChatLead. What
+        // was placed rides on this message's entry, so the host records the line as it was placed.
+        let led = promoteLeadItems()
         syncDeferredContext()
         localCounter += 1
         let itemID = "user-\(localCounter)"
@@ -517,7 +579,8 @@ final class ChatStore: ObservableObject {
         items.append(.message(message))
         emit(.send)
         emit(.messageFinalized)
-        fireEntry(type: "message", id: itemID, data: ChatItem.message(message))
+        fireEntry(type: "message", id: itemID, data: ChatItem.message(message),
+                  lead: led.isEmpty ? nil : led)
         // Enter the awaiting-reply state: the turn is submitted but nothing has streamed back yet.
         // Cleared by the terminal messageEnd / error (or a restore); until then the view shows a
         // "thinking" spinner, because isStreaming only flips true on the first streamed event.
@@ -541,7 +604,8 @@ final class ChatStore: ObservableObject {
     /// dispatched, so the transport's prime-before-prompt ordering holds (ACP chains the
     /// prompt behind the registered prime task). Skipped when the agent's context already
     /// matches the display, so browsing away and back never pays a prime; a .fresh context is
-    /// never re-primed (its divergence is the user's choice). Called at the top of send(),
+    /// never re-primed (its divergence is the user's choice). Called at the top of send() - after
+    /// any held lead items are placed, so they are part of the conversation this primes - and
     /// before the optimistic user message appends (the prompt itself carries the new text).
     private func syncDeferredContext() {
         guard contextState == .pending, let transport else { return }
@@ -727,6 +791,8 @@ final class ChatStore: ObservableObject {
         contentCancellable = nil
         appendCancellable?.cancel()
         appendCancellable = nil
+        leadCancellable?.cancel()
+        leadCancellable = nil
         configCancellable?.cancel()
         configCancellable = nil
         streamBuffers.removeAll()
@@ -1105,10 +1171,142 @@ final class ChatStore: ObservableObject {
         // trackContextAfterTurn adopts the unsent message as held at the end of the next turn -
         // after which nothing can tell it was ever wrong. Saying `pending` costs one re-prime on
         // the next send, which is exactly what the deferred path already does.
-        if transport != nil, !Self.wireEntries(from: [item]).isEmpty,
+        //
+        // Except from .fresh, which syncDeferredContext never re-primes and this must not turn into
+        // a state it does: the empty context behind a "prime": false restore is the user's choice,
+        // and a line the host adds to the display joins the displayed-but-unsent transcript rather
+        // than priming all of it into an agent the user deliberately left empty.
+        if transport != nil, contextState != .fresh, !Self.wireEntries(from: [item]).isEmpty,
            Self.wireEntries(from: items) != wireContext {
             contextState = .pending
         }
+    }
+
+    /// Takes the host's waiting list from the lead channel: the items to place in front of the
+    /// next message the user sends. Internal so tests can drive it as the subscription does.
+    ///
+    /// The value is the WHOLE list, so this replaces rather than accumulates - a host that shows a
+    /// second marker before the first has been placed writes both lines again. Empty means nothing
+    /// is waiting, which is also how a host takes back a line it no longer wants shown (the
+    /// conversation it belonged to was replaced), so an empty value clears rather than being
+    /// ignored the way an empty restore is.
+    ///
+    /// One item per line, split on "\n" ALONE. `components(separatedBy: .newlines)` also breaks on
+    /// U+0085, U+2028 and U+2029 - the three separators a JSON encoder leaves unescaped when it is
+    /// not escaping non-ASCII - so a model label carrying one would be split into two unparseable
+    /// halves and the marker would vanish. A dictionary or an array is accepted too, for a host
+    /// whose bridge hands over structure rather than text.
+    func reconcileLeadItems(_ value: Any?) {
+        if Self.isEmptyContent(value) {
+            leadItems = []
+            lastRejectedLead = nil
+            return
+        }
+        let (decoded, rejected) = Self.decodeLeadItems(value)
+        if rejected > 0 {
+            // Warn ONCE per distinct bad value, for the reason the append channel does: this
+            // channel is re-delivered on every change to the whole state dictionary.
+            let description = String(describing: value)
+            if description != lastRejectedLead {
+                lastRejectedLead = description
+                logger.log("Chat lead channel delivered \(rejected) value(s) that are not "
+                           + "decodable items; they were ignored", .warning)
+            }
+        } else {
+            lastRejectedLead = nil
+        }
+        // A value with nothing READABLE in it is not a statement about the list, so it does not
+        // replace one: a host that meant to withdraw has ways to say so, and obeying garbage as a
+        // withdrawal drops the line with nothing to show for it. A value that simply carries no
+        // items - an empty array, or text that is only separators - IS a statement, and says the
+        // same thing the empty value above says. The two are told apart by whether anything was
+        // rejected, not by the count that survived.
+        guard !decoded.isEmpty || rejected == 0 else { return }
+        // A line already placed stays placed: see promotedLeadIDs. An id already in the transcript
+        // is dropped for the same reason it is on the append channel - a restore that carried the
+        // marker itself wins over a channel still describing it.
+        leadItems = decoded.filter { item in
+            !promotedLeadIDs.contains(item.id) && !items.contains(where: { $0.id == item.id })
+        }
+    }
+
+    /// Decodes the lead channel's value into items, with the count it could not read. A line that
+    /// will not decode costs that line and nothing else: the rest of the list still leads the
+    /// message, which is the same trade the transcript decoder makes item by item.
+    private static func decodeLeadItems(_ value: Any?) -> (items: [ChatItem], rejected: Int) {
+        var raw: [Any] = []
+        switch value {
+        case let string as String:
+            raw = string.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        case let data as Data:
+            // Undecodable bytes are REJECTED rather than read as an empty list: an empty list is
+            // what a host writes to withdraw, and silently agreeing with a value that says nothing
+            // of the kind is how a line disappears with no diagnostic anywhere.
+            guard let text = String(data: data, encoding: .utf8) else { return ([], 1) }
+            raw = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        case let array as [Any]:
+            raw = array
+        case let object as [String: Any]:
+            raw = [object]
+        default:
+            raw = value.map { [$0] } ?? []
+        }
+        var items: [ChatItem] = []
+        var rejected = 0
+        for element in raw {
+            if let string = element as? String,
+               string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                continue
+            }
+            if let item = ChatItem.decode(from: element) {
+                items.append(item)
+            } else {
+                rejected += 1
+            }
+        }
+        return (items, rejected)
+    }
+
+    /// Places what the lead channel is holding in front of the message about to be appended, and
+    /// returns what it placed - as placed, for the message's entry to report. Called at the TOP of
+    /// send(), before the deferred context sync, so an item that does move the wire is part of the
+    /// conversation that sync primes rather than a line the agent is never told about. (Every item
+    /// this channel was built for - session markers - moves nothing.)
+    ///
+    /// AN ITEM THAT ARRIVES WITHOUT A TIME IS STAMPED WITH THIS MOMENT. The host handed it over
+    /// when it learned the line would be needed - for a session marker, when the conversation was
+    /// displayed or the engine loaded - and the user may not type for an hour after that. The line
+    /// says what happened when the message was sent, and this is the only place that knows when
+    /// that was. One stamp for the whole batch: lines placed in front of one message share its
+    /// moment. A host that stamped the item keeps its stamp.
+    private func promoteLeadItems() -> [ChatItem] {
+        guard !leadItems.isEmpty else { return [] }
+        let waiting = leadItems
+        leadItems = []
+        let stamp = ChatTimestamp.format(now())
+        var placed: [ChatItem] = []
+        for held in waiting {
+            // Marked promoted even when it is not placed: either way this window is done with it,
+            // and the host's resting value must stop re-arming it.
+            promotedLeadIDs.insert(held.id)
+            guard !items.contains(where: { $0.id == held.id }) else { continue }
+            let item = held.stamped(ifUnstamped: stamp)
+            items.append(item)
+            placed.append(item)
+            // The bookkeeping every other way into `items` performs - see reconcileAppendedItem,
+            // where skipping it lets a host-supplied id collide with one the store is about to mint.
+            advanceLocalCounter(past: [item])
+            transport?.reserveIDs(seen: [item.id])
+            // A marker adds no wire entry and leaves the context alone. Anything that does add one
+            // is a line the agent has not been told about, and saying so here is what gets it into
+            // the prime syncDeferredContext is about to run - unless the context is .fresh, which
+            // that sync never re-primes and this must not turn into one it does (see
+            // reconcileAppendedItem for the same rule on the append channel).
+            if transport != nil, contextState != .fresh, !Self.wireEntries(from: [item]).isEmpty {
+                contextState = .pending
+            }
+        }
+        return placed
     }
 
     // MARK: - Session transcript seam: restore-in + incremental per-entry persistence
@@ -1245,6 +1443,12 @@ final class ChatStore: ObservableObject {
         // anything. Left in place it outlives them forever and silently swallows a legitimate
         // re-append of the same id into the new transcript.
         appendedItemIDs.removeAll()
+        // `leadItems` and `promotedLeadIDs` deliberately survive this. What is WAITING belongs to
+        // the host, which replaces the channel when the conversation it was minted for goes away -
+        // and one restore does not mean that, since the Summarize re-inject replaces the display
+        // with the same conversation and its marker must still lead the message that follows.
+        // What was already PLACED must stay remembered for the opposite reason: the channel goes
+        // on resting on it, so forgetting would let the next re-delivery arm it a second time.
         // Advance the id counter past any store-generated ids in the loaded transcript, so a
         // subsequent user/system/error item cannot collide with a loaded one.
         advanceLocalCounter(past: transcript.items)
@@ -1273,26 +1477,33 @@ final class ChatStore: ObservableObject {
     /// and id (for idempotent upsert on the app side), and the entry's JSON. `updated` is set
     /// only on a POST-finalization re-fire of an already-seen id (a status change, reaction,
     /// edit, delete, or terminal file transfer); it is omitted otherwise, so a v1 entry's
-    /// envelope is byte-identical to before.
+    /// envelope is byte-identical to before. `lead` is present only on a message that held items
+    /// were placed in front of (see observeChatLead): those items, as placed and in order, with
+    /// the timestamp the store stamped on any that arrived without one. Omitted otherwise, for the
+    /// same reason `updated` is.
     private struct EntryEnvelope<Payload: Encodable>: Encodable {
         let sequence: Int
         let type: String
         let id: String?
         let data: Payload
         let updated: Bool?
+        let lead: [ChatItem]?
     }
 
     /// Emits `.entry` (when the host enabled entry events) with a JSON envelope for one finalized
     /// transcript entry, so the host can persist incrementally without polling. Never called on streaming deltas.
-    /// `updated` marks a re-fire for an id the host already has (upsert-and-mark-updated).
-    private func fireEntry<Payload: Encodable>(type: String, id: String?, data: Payload, updated: Bool = false) {
+    /// `updated` marks a re-fire for an id the host already has (upsert-and-mark-updated). `lead` is
+    /// what the store placed in front of a message from the lead channel, for that message's entry.
+    private func fireEntry<Payload: Encodable>(type: String, id: String?, data: Payload, updated: Bool = false,
+                                               lead: [ChatItem]? = nil) {
         guard config.emitsEntryEvents, hostEvents != nil else {
             return
         }
         // Compute the next sequence but commit it only if the payload encodes, so an encode failure
         // does not burn a number (a host detecting dropped events by a sequence gap would false-positive).
         let next = entrySequence + 1
-        let envelope = EntryEnvelope(sequence: next, type: type, id: id, data: data, updated: updated ? true : nil)
+        let envelope = EntryEnvelope(sequence: next, type: type, id: id, data: data, updated: updated ? true : nil,
+                                     lead: lead)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard let jsonData = try? encoder.encode(envelope), let json = String(data: jsonData, encoding: .utf8) else {

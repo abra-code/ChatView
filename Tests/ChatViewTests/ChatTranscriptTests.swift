@@ -93,6 +93,7 @@ private struct CapturedEntry: Decodable {
     let sequence: Int
     let type: String
     let id: String?
+    let lead: [ChatItem]?
 }
 
 /// Collects the JSON envelopes carried by `.entry` host events.
@@ -251,9 +252,13 @@ private final class FakeContentSource: ChatContentSource {
     var appended: Any? {
         didSet { appendObservers.values.forEach { $0(appended) } }
     }
+    var lead: Any? {
+        didSet { leadObservers.values.forEach { $0(lead) } }
+    }
     private var contentObservers: [Int: (Any?) -> Void] = [:]
     private var configObservers: [Int: (Any?) -> Void] = [:]
     private var appendObservers: [Int: (Any?) -> Void] = [:]
+    private var leadObservers: [Int: (Any?) -> Void] = [:]
     private var nextID = 0
 
     init(seed: Any? = nil, config: Any? = nil) {
@@ -283,6 +288,14 @@ private final class FakeContentSource: ChatContentSource {
         appendObservers[id] = handler
         handler(appended)   // immediate current-value delivery, like the other two
         return AnyCancellable { MainActor.assumeIsolated { self.appendObservers[id] = nil } }
+    }
+
+    func observeChatLead(_ handler: @escaping (Any?) -> Void) -> AnyCancellable {
+        nextID += 1
+        let id = nextID
+        leadObservers[id] = handler
+        handler(lead)
+        return AnyCancellable { MainActor.assumeIsolated { self.leadObservers[id] = nil } }
     }
 }
 
@@ -762,6 +775,109 @@ final class ChatAppendContextStateTests: XCTestCase {
         XCTAssertEqual(store.contextState, .synced,
                        "an empty message reaches no prime, so it cannot have moved the context")
     }
+
+    /// The same question asked of the lead channel, where the answer matters more: this places an
+    /// item DURING send(), a moment at which the whole-transcript snapshot is about to be rebuilt
+    /// anyway. A marker moves no wire entry, so the agent still holds the conversation and the
+    /// send must not pay a re-prime for a line the model will never see.
+    func testAPlacedMarkerLeavesTheContextSynced() {
+        let (store, transport, source) = primedStore()
+        restoreTwoMessages(source)
+        XCTAssertEqual(store.contextState, .synced)
+        let primesBefore = transport.primeCount
+
+        source.lead = ["type": "sessionEvent",
+                       "sessionEvent": ["id": "se-1", "kind": "resumed",
+                                        "model": "Qwen3 4B"] as [String: Any]]
+        store.send("and now?")
+
+        XCTAssertEqual(store.contextState, .synced,
+                       "a marker adds no wire entry, so the agent still holds the conversation")
+        XCTAssertEqual(transport.primeCount, primesBefore,
+                       "and leading a message must not re-prime one that was already synced")
+    }
+
+    /// Placing is the fifth way an item enters the store, and it replays what the other four do:
+    /// an id the transport does not know about is one it can mint again, and every mutation path
+    /// finds items by `firstIndex`.
+    func testAPlacedItemIsReservedWithTheTransport() {
+        let (store, transport, source) = primedStore()
+        restoreTwoMessages(source)
+
+        source.lead = ["type": "sessionEvent",
+                       "sessionEvent": ["id": "se-9", "kind": "resumed"] as [String: Any]]
+        store.send("and now?")
+
+        XCTAssertTrue(transport.reserved.contains("se-9"),
+                      "the placed id must be reserved, or the transport may mint it again")
+    }
+
+    /// The case the channel's type permits and the ORDER inside send() answers. A message placed
+    /// in front of the user's own is a line the agent was never given; placed before the deferred
+    /// sync runs, it is part of the conversation that sync primes rather than one the model
+    /// silently never sees.
+    func testAPlacedMessageIsPrimedRatherThanLost() {
+        let (store, transport, source) = primedStore()
+        restoreTwoMessages(source)
+        XCTAssertEqual(store.contextState, .synced)
+        let primesBefore = transport.primeCount
+
+        source.lead = ["type": "message",
+                       "message": ["id": "h1", "role": "agent",
+                                   "text": "never sent"] as [String: Any]]
+        store.send("and now?")
+
+        XCTAssertEqual(store.items.map(\.id), ["m0", "m1", "h1", "user-1"])
+        XCTAssertEqual(transport.primeCount, primesBefore + 1,
+                       "a line that moves the wire must reach the agent with this very send")
+        XCTAssertEqual(store.contextState, .synced)
+    }
+
+    private func restoreTwoMessagesOverAnEmptyContext(_ source: AppendConfigSource) {
+        source.content = [
+            "version": 1,
+            "prime": false,
+            "items": [["type": "message",
+                       "message": ["id": "m0", "role": "local", "text": "hello"]] as [String: Any],
+                      ["type": "message",
+                       "message": ["id": "m1", "role": "agent", "text": "hi"]] as [String: Any]],
+        ] as [String: Any]
+    }
+
+    /// A "prime": false restore shows the transcript over an EMPTY context, by the user's choice,
+    /// and the deferred sync never re-primes a .fresh context. A line placed from the lead channel
+    /// must not turn that choice into a pending re-prime of the whole display on this very send.
+    func testAPlacedMessageLeavesAFreshContextFresh() {
+        let (store, transport, source) = primedStore()
+        restoreTwoMessagesOverAnEmptyContext(source)
+        XCTAssertEqual(store.contextState, .fresh)
+        let primesBefore = transport.primeCount
+
+        source.lead = ["type": "message",
+                       "message": ["id": "h1", "role": "agent",
+                                   "text": "never sent"] as [String: Any]]
+        store.send("and now?")
+
+        XCTAssertEqual(store.items.map(\.id), ["m0", "m1", "h1", "user-1"])
+        XCTAssertEqual(store.contextState, .fresh, "the empty context is the user's choice")
+        XCTAssertEqual(transport.primeCount, primesBefore, "and the send must not re-prime it")
+    }
+
+    /// The same rule on the append channel, which had the same hole: a line the host adds joins
+    /// the displayed-but-unsent transcript rather than marking it for a prime.
+    func testAnAppendedMessageLeavesAFreshContextFresh() {
+        let (store, transport, source) = primedStore()
+        restoreTwoMessagesOverAnEmptyContext(source)
+        XCTAssertEqual(store.contextState, .fresh)
+        let primesBefore = transport.primeCount
+
+        source.appended = ["type": "message",
+                           "message": ["id": "h1", "role": "agent",
+                                       "text": "never sent"] as [String: Any]]
+
+        XCTAssertEqual(store.contextState, .fresh)
+        XCTAssertEqual(transport.primeCount, primesBefore)
+    }
 }
 
 private final class AppendRecordingTransport: ChatTransport, @unchecked Sendable {
@@ -793,9 +909,11 @@ private final class AppendConfigSource: ChatContentSource {
     var content: Any? { didSet { contentObservers.values.forEach { $0(content) } } }
     var config: Any? { didSet { configObservers.values.forEach { $0(config) } } }
     var appended: Any? { didSet { appendObservers.values.forEach { $0(appended) } } }
+    var lead: Any? { didSet { leadObservers.values.forEach { $0(lead) } } }
     private var contentObservers: [Int: (Any?) -> Void] = [:]
     private var configObservers: [Int: (Any?) -> Void] = [:]
     private var appendObservers: [Int: (Any?) -> Void] = [:]
+    private var leadObservers: [Int: (Any?) -> Void] = [:]
     private var nextID = 0
     init(config: Any? = nil) { self.config = config }
     func observeChatContent(_ handler: @escaping (Any?) -> Void) -> AnyCancellable {
@@ -812,6 +930,363 @@ private final class AppendConfigSource: ChatContentSource {
         nextID += 1; let id = nextID
         appendObservers[id] = handler; handler(appended)
         return AnyCancellable { MainActor.assumeIsolated { self.appendObservers[id] = nil } }
+    }
+    func observeChatLead(_ handler: @escaping (Any?) -> Void) -> AnyCancellable {
+        nextID += 1; let id = nextID
+        leadObservers[id] = handler; handler(lead)
+        return AnyCancellable { MainActor.assumeIsolated { self.leadObservers[id] = nil } }
+    }
+}
+
+// MARK: - The lead channel: a line held until there is a message for it to lead
+
+@MainActor
+final class ChatLeadChannelTests: XCTestCase {
+
+    private func marker(_ id: String, kind: String = "resumed", model: String = "Qwen3 4B",
+                        timestamp: String? = "2026-08-21T04:30:00Z") -> [String: Any] {
+        var event: [String: Any] = ["id": id, "kind": kind, "model": model]
+        if let timestamp { event["timestamp"] = timestamp }
+        return ["type": "sessionEvent", "sessionEvent": event]
+    }
+
+    private func markerJSON(_ id: String, kind: String = "resumed", model: String = "Qwen3 4B",
+                            timestamp: String? = "2026-08-21T04:30:00Z") -> String {
+        let data = try! JSONSerialization.data(withJSONObject: marker(id, kind: kind, model: model,
+                                                                      timestamp: timestamp))
+        return String(data: data, encoding: .utf8)!
+    }
+
+    /// The moment the tests pin the store's clock to, and its wire form.
+    private let sendMoment = "2026-08-21T06:55:12Z"
+
+    private func placedSessionEvent(_ store: ChatStore, at index: Int = 0) -> SessionEvent? {
+        guard store.items.indices.contains(index),
+              case .sessionEvent(let event) = store.items[index] else { return nil }
+        return event
+    }
+
+    private func makeStore(source: FakeContentSource, entrySink: EntrySink? = nil) -> ChatStore {
+        let logger = HistoryTestLogger()
+        var configuration = ChatConfiguration(dictionary: [:], logger: logger)
+        configuration.emitsEntryEvents = entrySink != nil
+        var hostEvents: ChatHostEventSink?
+        if let entrySink {
+            hostEvents = { event in
+                if case .entry(let json) = event { entrySink.add(json) }
+            }
+        }
+        let store = ChatStore(config: configuration, logger: logger, contentSource: source,
+                              hostEvents: hostEvents)
+        store.start()
+        return store
+    }
+
+    /// THE BUG THIS CHANNEL EXISTS FOR, first half: a conversation the user opened and read is not
+    /// a conversation resumed, so nothing may appear on the strength of the display alone.
+    func testAWaitingItemIsNotShownUntilAMessageIsSent() {
+        let source = FakeContentSource(seed: [
+            "version": 1,
+            "items": [["type": "message",
+                       "message": ["id": "m1", "role": "local", "text": "hi"]] as [String: Any]],
+        ] as [String: Any])
+        let store = makeStore(source: source)
+
+        source.lead = markerJSON("se-1")
+
+        XCTAssertEqual(store.items.count, 1, "holding a line must not put it on screen")
+        XCTAssertEqual(store.items.first?.id, "m1")
+    }
+
+    /// The other half: when the message does arrive, the held line is IN FRONT of it - which the
+    /// append channel cannot do, because by then the message is already on screen.
+    func testTheWaitingItemLeadsTheMessageItOpens() {
+        let source = FakeContentSource()
+        let store = makeStore(source: source)
+        source.lead = markerJSON("se-1")
+
+        store.send("what changed?")
+
+        XCTAssertEqual(store.items.map(\.id), ["se-1", "user-1"],
+                       "the marker must lead the message it introduces, not follow it")
+        guard case .sessionEvent(let event) = store.items[0] else {
+            return XCTFail("expected the held marker first")
+        }
+        XCTAssertEqual(event.model, "Qwen3 4B")
+    }
+
+    /// The host is describing an item it already holds, as on the content and append channels, so
+    /// placing it fires no entry OF ITS OWN - a host would write it twice. What the host cannot
+    /// know from its own copy is that the line was placed at all, and that is the message's entry
+    /// to say: it names what led it.
+    func testPlacingAHeldItemFiresNoEntryOfItsOwnAndTheMessageReportsIt() {
+        let sink = EntrySink()
+        let source = FakeContentSource()
+        let store = makeStore(source: source, entrySink: sink)
+        source.lead = markerJSON("se-1")
+
+        store.send("what changed?")
+
+        let envelopes = sink.envelopes()
+        XCTAssertEqual(envelopes.map(\.id), ["user-1"],
+                       "only the message is a finalized entry; the marker is not")
+        XCTAssertEqual(envelopes.first?.lead?.map(\.id), ["se-1"],
+                       "the message's entry carries the line that led it")
+    }
+
+    /// THE TIME ON THE LINE IS THE TIME OF THE MESSAGE IT LEADS. The host hands the line over when
+    /// it learns it will be needed - the conversation displayed, the engine loaded - and the user
+    /// may not type for an hour; a stamp from then would put "Resumed at 2:55" over a message sent
+    /// at 3:55. So a line handed over without a time is stamped here, at the send.
+    func testAnItemHeldWithoutATimeIsStampedWhenItIsPlaced() {
+        let source = FakeContentSource()
+        let store = makeStore(source: source)
+        store.now = { ChatTimestamp.parse(self.sendMoment)! }
+        source.lead = markerJSON("se-1", timestamp: nil)
+
+        store.send("what changed?")
+
+        XCTAssertEqual(placedSessionEvent(store)?.timestamp, sendMoment,
+                       "an unstamped line takes the moment it was placed")
+    }
+
+    /// The rule is about the field being empty, not about who owns it: a host that stamped its
+    /// line meant that time, and the store must not overwrite it with its own.
+    func testAnItemHeldWithATimeKeepsIt() {
+        let source = FakeContentSource()
+        let store = makeStore(source: source)
+        store.now = { ChatTimestamp.parse(self.sendMoment)! }
+        source.lead = markerJSON("se-1", timestamp: "2026-08-21T04:30:00Z")
+
+        store.send("what changed?")
+
+        XCTAssertEqual(placedSessionEvent(store)?.timestamp, "2026-08-21T04:30:00Z",
+                       "a host's own stamp is not replaced")
+    }
+
+    /// The half the host persists from. The entry carries the line AS PLACED - with the stamp the
+    /// store put on it - because the host's copy does not have that time and cannot reconstruct
+    /// it: the whole reason the store stamps is that the host was not there when it happened.
+    func testTheMessageEntryCarriesTheLineAsPlaced() {
+        let sink = EntrySink()
+        let source = FakeContentSource()
+        let store = makeStore(source: source, entrySink: sink)
+        store.now = { ChatTimestamp.parse(self.sendMoment)! }
+        source.lead = markerJSON("se-1", timestamp: nil)
+
+        store.send("what changed?")
+
+        let envelope = sink.envelopes().first
+        XCTAssertEqual(envelope?.type, "message")
+        guard case .sessionEvent(let reported)? = envelope?.lead?.first else {
+            return XCTFail("expected the placed marker in the message's entry: \(sink.rawJSONs())")
+        }
+        XCTAssertEqual(reported.id, "se-1")
+        XCTAssertEqual(reported.timestamp, sendMoment, "reported as placed, stamp included")
+        XCTAssertEqual(reported.model, "Qwen3 4B")
+        // The raw spelling, because a host reading the envelope in a shell pre-filters on it
+        // before parsing: the key is named exactly "lead", unspaced, holding an array.
+        XCTAssertTrue(sink.rawJSONs()[0].contains("\"lead\":["), sink.rawJSONs()[0])
+    }
+
+    /// Every other message is persisted byte-for-byte as before: a message nothing led carries no
+    /// `lead` key at all, not an empty one.
+    func testAMessageNothingLedCarriesNoLeadKey() {
+        let sink = EntrySink()
+        let source = FakeContentSource()
+        let store = makeStore(source: source, entrySink: sink)
+
+        store.send("hello")
+
+        let raw = sink.rawJSONs()
+        XCTAssertEqual(raw.count, 1)
+        XCTAssertFalse(raw[0].contains("\"lead\""), "no lead key on an unled message: \(raw[0])")
+    }
+
+    /// Lines placed in front of one message share its moment - two stamps a few microseconds
+    /// apart would be two different times for one event.
+    func testLinesPlacedTogetherShareOneStamp() {
+        let source = FakeContentSource()
+        let store = makeStore(source: source)
+        store.now = { ChatTimestamp.parse(self.sendMoment)! }
+        source.lead = markerJSON("se-1", timestamp: nil) + "\n"
+            + markerJSON("se-2", kind: "modelChanged", model: "Llama 3.1 8B", timestamp: nil)
+
+        store.send("go on")
+
+        XCTAssertEqual(placedSessionEvent(store, at: 0)?.timestamp, sendMoment)
+        XCTAssertEqual(placedSessionEvent(store, at: 1)?.timestamp, sendMoment)
+    }
+
+    /// The stamping is not a session-marker special case: any held kind that has a timestamp to
+    /// carry and arrived without one takes the moment it was placed. A message is the kind a
+    /// host would most plausibly hand over next.
+    func testAHeldMessageWithoutATimeIsStampedToo() {
+        let source = FakeContentSource()
+        let store = makeStore(source: source)
+        store.now = { ChatTimestamp.parse(self.sendMoment)! }
+        source.lead = "{\"type\":\"message\",\"message\":{\"id\":\"pre-1\",\"role\":\"agent\",\"text\":\"Welcome back.\"}}"
+
+        store.send("thanks")
+
+        guard case .message(let placed)? = store.items.first else {
+            return XCTFail("expected the held message first: \(store.items.map(\.id))")
+        }
+        XCTAssertEqual(placed.id, "pre-1")
+        XCTAssertEqual(placed.timestamp, sendMoment)
+    }
+
+    /// The value is the whole waiting list, so a host that shows a second marker before the first
+    /// has been placed writes both lines - and gets both, in the order it wrote them.
+    func testTheChannelCarriesTheWholeWaitingList() {
+        let source = FakeContentSource()
+        let store = makeStore(source: source)
+        source.lead = markerJSON("se-1")
+        source.lead = markerJSON("se-1") + "\n" + markerJSON("se-2", kind: "modelChanged",
+                                                             model: "Llama 3.1 8B")
+
+        store.send("go on")
+
+        XCTAssertEqual(store.items.map(\.id), ["se-1", "se-2", "user-1"],
+                       "both held lines lead the message, in the order the host showed them")
+    }
+
+    /// How a host takes a line back: the conversation it was minted for was replaced, so the line
+    /// must never appear. An empty value CLEARS rather than being ignored the way an empty
+    /// restore is - there is nothing else it could mean.
+    func testAnEmptyValueTakesTheWaitingItemBack() {
+        let source = FakeContentSource()
+        let store = makeStore(source: source)
+        source.lead = markerJSON("se-1")
+        source.lead = ""
+
+        store.send("hello")
+
+        XCTAssertEqual(store.items.map(\.id), ["user-1"], "a withdrawn line must not be placed")
+    }
+
+    /// The hazard the append channel parks itself empty to avoid, which this channel cannot do -
+    /// it rests holding what it is waiting to place. The host bridge republishes every channel on
+    /// any state change, so the value that was just consumed comes back; placed twice, the second
+    /// message would be introduced by a marker already sitting above the first.
+    func testARedeliveryAfterTheSendDoesNotPlaceTheItemAgain() {
+        let source = FakeContentSource()
+        let store = makeStore(source: source)
+        source.lead = markerJSON("se-1")
+        store.send("first")
+
+        source.lead = markerJSON("se-1")     // the host has not parked the channel yet
+        store.send("second")
+
+        XCTAssertEqual(store.items.map(\.id), ["se-1", "user-1", "user-2"],
+                       "a line already placed must not lead a second message")
+    }
+
+    /// The Summarize re-inject: the display is replaced with the SAME conversation, and the
+    /// marker waiting for its first message is still waiting afterwards. The store must not
+    /// mistake a restore for the host withdrawing it.
+    func testARestoreLeavesTheWaitingItemWaiting() {
+        let source = FakeContentSource()
+        let store = makeStore(source: source)
+        source.lead = markerJSON("se-1")
+
+        source.content = [
+            "version": 1,
+            "items": [["type": "message",
+                       "message": ["id": "m1", "role": "local", "text": "hi"]] as [String: Any]],
+        ] as [String: Any]
+        store.send("and now?")
+
+        XCTAssertEqual(store.items.map(\.id), ["m1", "se-1", "user-1"],
+                       "the held marker still leads the first message after a re-inject")
+    }
+
+    /// A restore that carries the marker itself wins: the line is in the transcript, and placing
+    /// the channel's copy would show it twice.
+    func testAnItemAlreadyInTheTranscriptIsNotPlaced() {
+        let source = FakeContentSource(seed: [
+            "version": 1,
+            "items": [["type": "sessionEvent",
+                       "sessionEvent": ["id": "se-1", "kind": "resumed"]] as [String: Any]],
+        ] as [String: Any])
+        let store = makeStore(source: source)
+        source.lead = markerJSON("se-1")
+
+        store.send("hello")
+
+        XCTAssertEqual(store.items.map(\.id), ["se-1", "user-1"], "no second copy of the marker")
+    }
+
+    /// A value with NOTHING readable in it is not a statement about the list, so it must not
+    /// replace one. Withdrawing is what an empty value means, and a host that meant to withdraw
+    /// has a way to say so - reading garbage as "withdraw" loses the line and reports nothing.
+    func testAValueWithNothingReadableInItDoesNotWithdraw() {
+        let source = FakeContentSource()
+        let store = makeStore(source: source)
+        source.lead = markerJSON("se-1")
+        source.lead = "{\"type\": \"nonsense\"}"
+
+        store.send("hello")
+
+        XCTAssertEqual(store.items.map(\.id), ["se-1", "user-1"],
+                       "the line already waiting must survive an unreadable write")
+    }
+
+    /// The withdrawal a host with a structural bridge would write. An empty ARRAY carries no
+    /// items and says so - it must not be confused with a value that could not be read, which is
+    /// the case above and keeps what is waiting.
+    func testAnEmptyListAlsoWithdraws() {
+        let source = FakeContentSource()
+        let store = makeStore(source: source)
+        source.lead = [marker("se-1")]
+        source.lead = [] as [Any]
+
+        store.send("hello")
+
+        XCTAssertEqual(store.items.map(\.id), ["user-1"], "an empty list is a withdrawal")
+    }
+
+    /// Bytes that are not text are not a list either. Read as an empty one - which is what
+    /// `String(data:encoding:)` failing used to produce - they would withdraw silently.
+    func testBytesThatAreNotTextDoNotWithdraw() {
+        let source = FakeContentSource()
+        let store = makeStore(source: source)
+        source.lead = markerJSON("se-1")
+        source.lead = Data([0xFF, 0xFE, 0xFF])
+
+        store.send("hello")
+
+        XCTAssertEqual(store.items.map(\.id), ["se-1", "user-1"],
+                       "undecodable bytes must not be obeyed as a withdrawal")
+    }
+
+    /// The view disappeared, so the store stopped listening - on this channel as on the other
+    /// three. A sink left running past teardown is not a leak here, but it is the shape that
+    /// becomes a duplicate subscription the first time the resubscribe guard is restructured.
+    func testTeardownStopsListeningToTheChannel() {
+        let source = FakeContentSource()
+        let store = makeStore(source: source)
+        store.teardown()
+
+        source.lead = markerJSON("se-1")
+        store.send("hello")
+
+        XCTAssertEqual(store.items.map(\.id), ["user-1"],
+                       "a torn-down store must not take anything from the channel")
+    }
+
+    /// One line that will not decode costs that line and nothing else - the same trade the
+    /// transcript decoder makes item by item. The alternative is a message introduced by nothing
+    /// because the value it travelled with had a stray character in it.
+    func testALineThatWillNotDecodeCostsOnlyThatLine() {
+        let source = FakeContentSource()
+        let store = makeStore(source: source)
+        source.lead = "{\"type\": \"nonsense\"}\n" + markerJSON("se-2")
+
+        store.send("hello")
+
+        XCTAssertEqual(store.items.map(\.id), ["se-2", "user-1"],
+                       "the readable line still leads the message")
     }
 }
 
