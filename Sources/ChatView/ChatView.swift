@@ -62,6 +62,8 @@ public struct ChatView: View {
     // Paging: the id of the former top item, captured when a page is requested, so the scroll position
     // can be restored to it after older items prepend (no visual jump).
     @State private var pagingAnchorID: String?
+    // Find: the hit index the last in-row alignment served, so each hit is re-aligned at most once.
+    @State private var findAlignedIndex: Int?
     @StateObject private var audio = ChatAudioController()
 
     private struct ReplyTarget: Identifiable {
@@ -82,6 +84,10 @@ public struct ChatView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
+            if store.find.isPresented {
+                ChatFindBar(store: store)
+                Divider()
+            }
             if !store.plan.isEmpty && config.surfaces.plan != .hidden {
                 PlanPanel(entries: store.plan, initiallyExpanded: config.surfaces.plan != .collapsed)
                 Divider()
@@ -120,6 +126,18 @@ public struct ChatView: View {
             }
         }
         .onAppear { store.start() }
+        .onChange(of: store.find.current) { _, hit in
+            scrollToFindHit(hit)
+        }
+        .background {
+            if config.find {
+                // An invisible button carries Cmd-F: the one element whose shortcut works on every
+                // platform without a menu.
+                Button("Find") { store.presentFind() }
+                    .keyboardShortcut("f", modifiers: .command)
+                    .hidden()
+            }
+        }
         .onDisappear {
             store.teardown()
             audio.stop()   // a playing voice message must not outlive the view
@@ -212,6 +230,21 @@ public struct ChatView: View {
                 .trackScrollPhase { userDriven in
                     pinTracker.noteScrollPhase(userDriven: userDriven)
                 }
+                // Find: the current hit's row and in-row match frames, resolved against the viewport in
+                // the same pass that produced them (never stored - storing an anchor in state would
+                // invalidate this whole body on every layout pass), so a match deep inside a long message
+                // can be brought into view after the row itself was.
+                .overlayPreferenceValue(ChatFindAnchorsKey.self) { anchors in
+                    GeometryReader { geometry in
+                        let resolved = FindGeometry(row: anchors.row.map { geometry[$0] },
+                                                    match: anchors.match.map { geometry[$0] })
+                        Color.clear
+                            .onChange(of: resolved) { _, resolved in
+                                alignFindHit(resolved, viewport: geometry.frame(in: .local), proxy: proxy)
+                            }
+                    }
+                    .allowsHitTesting(false)
+                }
                 .onChange(of: store.items) { old, new in
                     // A prepended history page: restore the scroll to the anchored former-top item so the
                     // view does not jump (non-animated, same layout pass). Takes precedence over the pin.
@@ -256,6 +289,13 @@ public struct ChatView: View {
                     // stale heights net a bogus scroll-up and unpin), and start the new one pinned at
                     // the latest entry - onAppear does not refire for an in-place content swap.
                     pinTracker.reset()
+                    // Unless a find is lit: a conversation opened from a filtered list lands on its
+                    // first hit (scrollToFindHit, whose order relative to this handler is not defined),
+                    // and pinning here would let the chaser pull the reader back to the bottom.
+                    guard store.find.current == nil else {
+                        isPinnedToBottom = false
+                        return
+                    }
                     isPinnedToBottom = true
                     scrollToBottom(proxy, animated: false, source: "generation")
                 }
@@ -410,6 +450,7 @@ public struct ChatView: View {
     private func diagnosedRow(for item: ChatItem) -> some View {
         row(for: item)
             .chatRowDiagnostics(id: item.id, descriptor: ChatViewDiagnostics.describe(item))
+            .chatFindAnchors(isCurrent: store.find.current?.itemID == item.id)
             .id(item.id)
     }
 
@@ -417,26 +458,34 @@ public struct ChatView: View {
     private func row(for item: ChatItem) -> some View {
         switch item {
         case .message(let message):
-            MessageRow(message: message, config: config)
+            MessageRow(message: message, config: config,
+                       highlights: store.find.highlights(for: message.id, style: chatFindStyle))
         case .thought(let thought):
-            ThoughtRow(thought: thought, initiallyExpanded: config.surfaces.thoughts != .collapsed)
+            ThoughtRow(thought: thought, initiallyExpanded: config.surfaces.thoughts != .collapsed,
+                       highlights: store.find.highlights(for: thought.id, style: chatFindStyle))
         case .toolCall(let call):
             ToolCallRow(call: call, compact: config.surfaces.toolCalls == .collapsed,
-                        showsDiff: config.surfaces.diffs != .hidden)
+                        showsDiff: config.surfaces.diffs != .hidden,
+                        titleFind: store.find.ranges(for: call.id, field: .title),
+                        detailHighlights: store.find.highlights(for: call.id, style: chatFindStyle))
         case .image(_, let role, let image):
             ImageRow(role: role, image: image, config: config)
-        case .system(_, let text):
-            Text(text)
+        case .system(let id, let text):
+            ChatHighlightedText(text, find: store.find.ranges(for: id, field: .caption))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .center)
-        case .error(_, let text):
-            Label(text, systemImage: "exclamationmark.triangle")
-                .font(.caption)
-                .foregroundStyle(.red)
-                .frame(maxWidth: .infinity, alignment: .center)
+        case .error(let id, let text):
+            Label {
+                ChatHighlightedText(text, find: store.find.ranges(for: id, field: .caption))
+            } icon: {
+                Image(systemName: "exclamationmark.triangle")
+            }
+            .font(.caption)
+            .foregroundStyle(.red)
+            .frame(maxWidth: .infinity, alignment: .center)
         case .sessionEvent(let event):
-            SessionEventRow(event: event)
+            SessionEventRow(event: event, find: store.find.ranges(for: event.id, field: .caption))
         case .memberEvent, .callEvent, .file:
             // P2P (v2) rows (member / call captions, file / voice items) are built in P6.
             // No v1 document produces these items, so the placeholder never renders for v1.
@@ -458,11 +507,16 @@ public struct ChatView: View {
                 }
                 DualTranscriptRow(ctx: ctx, config: config, maxBubbleWidth: maxBubbleWidth,
                                   showsSenderNames: showsSenderNames, actions: dualActions,
-                                  highlighted: highlightedItemID == ctx.id, audio: audio,
+                                  highlighted: highlightedItemID == ctx.id,
+                                  highlights: store.find.highlights(for: ctx.id, style: chatFindStyle),
+                                  captionFind: store.find.ranges(for: ctx.id, field: .caption),
+                                  fileNameFind: store.find.ranges(for: ctx.id, field: .fileName),
+                                  audio: audio,
                                   onResend: { store.resendMessage(itemID: $0) })
             }
             .padding(.top, ctx.info.isFirstInRun ? 8 : 2)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .chatFindAnchors(isCurrent: store.find.current?.itemID == ctx.id)
             .id(ctx.id)
         }
     }
@@ -535,6 +589,47 @@ public struct ChatView: View {
         replyTarget = nil
         editTargetID = message.id
         store.draft = message.text
+    }
+
+    // MARK: - Find navigation
+
+    /// A new current hit: bring its row to the center (which also materializes a lazy row far away),
+    /// releasing the bottom pin so a live turn does not pull the reader back down. The in-row
+    /// alignment below follows once the row and its RichText have reported their frames.
+    private func scrollToFindHit(_ hit: ChatSearchHit?) {
+        guard let hit else {
+            return
+        }
+        findAlignedIndex = nil
+        isPinnedToBottom = false
+        scrollRequest = hit.itemID
+    }
+
+    private struct FindGeometry: Equatable {
+        var row: CGRect?
+        var match: CGRect?
+    }
+
+    /// Once per hit: if the match inside the (already centered) row is still outside the viewport - a
+    /// long message - re-align the row so the match's position within it lands at the same position
+    /// within the viewport. The match frame must lie inside the row frame before it counts: the row's
+    /// anchor and RichText's arrive on different runloop turns, and a frame left over from the
+    /// previous hit's RichText would otherwise be measured against the new row.
+    private func alignFindHit(_ geometry: FindGeometry, viewport: CGRect, proxy: ScrollViewProxy) {
+        guard let index = store.find.currentIndex, findAlignedIndex != index,
+              let hit = store.find.current, let row = geometry.row, let match = geometry.match,
+              row.height > 0, match.minY >= row.minY - 1, match.maxY <= row.maxY + 1 else {
+            return
+        }
+        findAlignedIndex = index
+        guard match.minY < viewport.minY || match.maxY > viewport.maxY else {
+            return
+        }
+        let fraction = min(1, max(0, (match.midY - row.minY) / row.height))
+        pinTracker.noteProgrammaticScroll()
+        withAnimation(.easeInOut(duration: 0.2)) {
+            proxy.scrollTo(hit.itemID, anchor: UnitPoint(x: 0, y: fraction))
+        }
     }
 
     private func requestScroll(to id: String) {
@@ -1004,6 +1099,7 @@ private extension View {
 private struct MessageRow: View {
     let message: ChatMessage
     let config: ChatConfiguration
+    let highlights: RichTextHighlights?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -1031,7 +1127,7 @@ private struct MessageRow: View {
         if message.text.isEmpty && message.isStreaming {
             Text("\u{2026}").foregroundStyle(.secondary)
         } else {
-            RichText(markdown: message.text)
+            RichText(markdown: message.text).findHighlights(highlights)
         }
     }
 
@@ -1047,10 +1143,12 @@ private struct MessageRow: View {
 // The label reads "Thinking..." while the thought streams and "Thoughts" once closed.
 private struct ThoughtRow: View {
     let thought: ChatMessage
+    let highlights: RichTextHighlights?
     @State private var expanded: Bool
 
-    init(thought: ChatMessage, initiallyExpanded: Bool) {
+    init(thought: ChatMessage, initiallyExpanded: Bool, highlights: RichTextHighlights? = nil) {
         self.thought = thought
+        self.highlights = highlights
         _expanded = State(initialValue: initiallyExpanded)
     }
 
@@ -1060,7 +1158,7 @@ private struct ThoughtRow: View {
                 if thought.text.isEmpty && thought.isStreaming {
                     Text("\u{2026}").foregroundStyle(.secondary)
                 } else {
-                    RichText(markdown: thought.text).opacity(0.75)
+                    RichText(markdown: thought.text).findHighlights(highlights).opacity(0.75)
                 }
             }
             .padding(.top, 4)
@@ -1070,6 +1168,14 @@ private struct ThoughtRow: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // The current hit is inside this fold: open it, or the reader is scrolled to a closed disclosure.
+        // `initial: true` because a lazy row far away is MATERIALIZED by the scroll to its hit, already
+        // holding it, and a change handler alone would never fire for it.
+        .onChange(of: highlights?.current != nil, initial: true) { _, isCurrent in
+            if isCurrent {
+                expanded = true
+            }
+        }
     }
 }
 
@@ -1149,6 +1255,7 @@ private struct SlashCommandMenuView: View {
 // compete with the messages it exists to attribute.
 private struct SessionEventRow: View {
     let event: SessionEvent
+    var find: (ranges: [NSRange], current: Int?)? = nil   // find hits in the headline
     var initiallyExpanded: Bool = false
 
     var body: some View {
@@ -1161,13 +1268,13 @@ private struct SessionEventRow: View {
                 DigestBody(digest: digest)
                     .padding(.top, 4)
             } label: {
-                rule(SessionEventText.lines(event, digest: digest))
+                rule(SessionEventText.displayedLines(event))
             }
             .disclosureGroupStyle(.automatic)
             .padding(.vertical, 6)
             .onAppear { expanded = initiallyExpanded }
         } else {
-            rule(SessionEventText.lines(event))
+            rule(SessionEventText.displayedLines(event))
                 .padding(.vertical, 6)
         }
     }
@@ -1195,7 +1302,7 @@ private struct SessionEventRow: View {
         HStack(spacing: 10) {
             line
             VStack(spacing: 1) {
-                Text(text.headline)
+                ChatHighlightedText(text.headline, find: find)
                     .font(.caption)
                 if let stamp = text.timestamp {
                     Text(stamp)
@@ -1463,10 +1570,12 @@ enum ToolDetailText {
     static let cap = 4000
 
     static func capped(_ text: String) -> String {
-        guard text.count > cap else {
+        // UTF-16 length: `count` walks every grapheme of a megabyte read, twice, before the cap applies.
+        let length = text.utf16.count
+        guard length > cap else {
             return text
         }
-        return text.prefix(cap) + "\n\u{2026} (truncated, \(text.count - cap) more characters)"
+        return text.prefix(cap) + "\n\u{2026} (truncated, \(length - cap) more characters)"
     }
 }
 
@@ -1486,6 +1595,8 @@ private struct ToolCallRow: View {
     let call: ToolCallModel
     let compact: Bool     // surfaces.toolCalls == .collapsed
     let showsDiff: Bool   // surfaces.diffs != .hidden
+    let titleFind: (ranges: [NSRange], current: Int?)?
+    let detailHighlights: RichTextHighlights?
     @State private var expanded = false
 
     var body: some View {
@@ -1496,6 +1607,13 @@ private struct ToolCallRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // The current hit is in the folded detail: open the card so the reader lands on it. `initial:
+        // true` for the lazy row materialized by the scroll to its hit (see ThoughtRow).
+        .onChange(of: detailHighlights?.current != nil, initial: true) { _, isCurrent in
+            if isCurrent && hasDetail {
+                expanded = true
+            }
+        }
 
         return Group {
             if compact {
@@ -1513,7 +1631,7 @@ private struct ToolCallRow: View {
         HStack(spacing: 6) {
             Image(systemName: kindIcon)
                 .foregroundStyle(.secondary)
-            Text(call.title)
+            ChatHighlightedText(call.title, find: titleFind)
                 .font(compact ? .caption : .callout.weight(.medium))
                 .foregroundStyle(compact ? Color.secondary : Color.primary)
                 .lineLimit(compact ? 1 : 2)
@@ -1537,7 +1655,7 @@ private struct ToolCallRow: View {
     @ViewBuilder
     private var detail: some View {
         if !call.contentText.isEmpty {
-            RichText(markdown: ToolDetailText.capped(call.contentText))
+            RichText(markdown: ToolDetailText.capped(call.contentText)).findHighlights(detailHighlights)
         }
         if showsDiff, let diff = call.diff {
             Text(diff.path)

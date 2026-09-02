@@ -63,6 +63,11 @@ struct DualTranscriptRow: View {
     let showsSenderNames: Bool
     let actions: DualRowActions
     let highlighted: Bool
+    // Find hits in this row (defaulted so the memberwise init stays source-compatible): the message
+    // body's, a caption's, a file name's.
+    var highlights: RichTextHighlights? = nil
+    var captionFind: (ranges: [NSRange], current: Int?)? = nil
+    var fileNameFind: (ranges: [NSRange], current: Int?)? = nil
     @ObservedObject var audio: ChatAudioController
     let onResend: (String) -> Void
 
@@ -71,7 +76,7 @@ struct DualTranscriptRow: View {
         case .message(let message):
             DualMessageRow(ctx: ctx, message: message, config: config, maxBubbleWidth: maxBubbleWidth,
                            showsSenderNames: showsSenderNames, actions: actions, highlighted: highlighted,
-                           onResend: onResend)
+                           highlights: highlights, onResend: onResend)
         case .image(_, let role, let image):
             // An image is a leading/trailing bubble too; reuse the shared image view inside the gutter frame.
             DualImageRow(ctx: ctx, role: role, image: image, config: config, maxBubbleWidth: maxBubbleWidth)
@@ -79,21 +84,24 @@ struct DualTranscriptRow: View {
             DualFileRow(ctx: ctx, file: file, config: config, maxBubbleWidth: maxBubbleWidth,
                         showsSenderNames: showsSenderNames, audio: audio,
                         onCancel: { actions.cancelTransfer(file.id) },
-                        onRetry: { onResend(file.id) })
+                        onRetry: { onResend(file.id) }, nameFind: fileNameFind)
         case .memberEvent(let event):
-            CenteredCaption(text: MemberEventText.caption(event), systemImage: "person.2", tint: .secondary)
+            CenteredCaption(text: MemberEventText.caption(event), systemImage: "person.2", tint: .secondary,
+                            find: captionFind)
         case .callEvent(let event):
             CenteredCaption(text: CallEventText.caption(event),
-                            systemImage: (event.isVideo ?? false) ? "video" : "phone", tint: callTint(event))
+                            systemImage: (event.isVideo ?? false) ? "video" : "phone", tint: callTint(event),
+                            find: captionFind)
         case .system(_, let text):
-            CenteredCaption(text: text, systemImage: nil, tint: .secondary)
+            CenteredCaption(text: text, systemImage: nil, tint: .secondary, find: captionFind)
         case .error(_, let text):
-            CenteredCaption(text: text, systemImage: "exclamationmark.triangle", tint: .red)
+            CenteredCaption(text: text, systemImage: "exclamationmark.triangle", tint: .red, find: captionFind)
         case .sessionEvent(let event):
             // A session boundary is as meaningful in a P2P transcript as in an agentic one, and
-            // CenteredCaption is already the shape this view gives every non-bubble row.
-            CenteredCaption(text: SessionEventText.caption(event), systemImage: "clock.arrow.circlepath",
-                            tint: .secondary)
+            // CenteredCaption is already the shape this view gives every non-bubble row. The find
+            // ranges address the headline, which the caption starts with.
+            CenteredCaption(text: SessionEventText.displayedLines(event).joined, systemImage: "clock.arrow.circlepath",
+                            tint: .secondary, find: captionFind)
         case .thought, .toolCall:
             // Agentic surfaces are not part of a P2P conversation.
             EmptyView()
@@ -134,6 +142,16 @@ enum SessionEventText {
 
         /// The two halves as one line, for accessibility and for the single-line P2P caption.
         var joined: String { [headline, timestamp].compactMap { $0 }.joined(separator: " ") }
+    }
+
+    /// The lines a row DRAWS for the event: with its digest when the digest has something to show
+    /// (the disclosure the single transcript folds it behind), without otherwise. The one rule for
+    /// both transcripts and for the find, so a search range is a range into the drawn headline.
+    static func displayedLines(_ event: SessionEvent) -> Lines {
+        if let digest = event.digest, !digest.isEmpty {
+            return lines(event, digest: digest)
+        }
+        return lines(event)
     }
 
     /// The boundary caption as one line. Composed from `lines` rather than built separately,
@@ -231,6 +249,7 @@ private struct DualMessageRow: View {
     let showsSenderNames: Bool
     let actions: DualRowActions
     let highlighted: Bool
+    let highlights: RichTextHighlights?
     let onResend: (String) -> Void
 
     private var isSelf: Bool { ctx.isSelf }
@@ -360,7 +379,7 @@ private struct DualMessageRow: View {
         } else {
             // .hug so a dual bubble sizes to its text (up to the column width) instead of filling the
             // column like a v1 full-width row. The enclosing bubble's .frame(maxWidth:) is the cap.
-            RichText(markdown: message.text).widthBehavior(.hug)
+            RichText(markdown: message.text).findHighlights(highlights).widthBehavior(.hug)
         }
     }
 
@@ -519,6 +538,7 @@ private struct DualFileRow: View {
     @ObservedObject var audio: ChatAudioController
     let onCancel: () -> Void
     let onRetry: () -> Void
+    var nameFind: (ranges: [NSRange], current: Int?)? = nil   // find hits in the file name
 
     private var isSelf: Bool { ctx.isSelf }
 
@@ -589,7 +609,7 @@ private struct DualFileRow: View {
             HStack(spacing: 8) {
                 Image(systemName: "doc.fill").font(.title3).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(file.name).font(.callout.weight(.medium)).lineLimit(1)
+                    ChatHighlightedText(file.name, find: nameFind).font(.callout.weight(.medium)).lineLimit(1)
                     Text(transferSubtitle).font(.caption2).foregroundStyle(.secondary)
                 }
             }
@@ -873,13 +893,18 @@ struct CenteredCaption: View {
     let text: String
     let systemImage: String?
     let tint: Color
+    var find: (ranges: [NSRange], current: Int?)? = nil   // find hits in the caption
 
     var body: some View {
         Group {
             if let systemImage {
-                Label(text, systemImage: systemImage)
+                Label {
+                    ChatHighlightedText(text, find: find)
+                } icon: {
+                    Image(systemName: systemImage)
+                }
             } else {
-                Text(text)
+                ChatHighlightedText(text, find: find)
             }
         }
         .font(.caption)

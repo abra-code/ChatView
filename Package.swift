@@ -36,7 +36,11 @@ let package = Package(
     ],
     dependencies: [
         // Sibling standalone components (github.com/abra-code), consumed as versioned releases.
-        .package(url: "https://github.com/abra-code/RichText", from: "0.1.0"),          // renders message Markdown
+        // RichText 0.2 adds the find engine, the draw-only highlights and the current-match anchor the
+        // transcript find is built on; a host that stays below it has no ChatSearch and no find bar.
+        .package(url: "https://github.com/abra-code/RichText", from: "0.2.0"),          // renders message Markdown
+        // DO NOT COMMIT: local path dependency so an unreleased RichText can be built
+        // .package(path: "../RichText"),
         .package(url: "https://github.com/abra-code/DiffView", from: "0.1.0"),          // renders tool-card diffs
         .package(url: "https://github.com/abra-code/AsyncImageCache", from: "0.1.0"),   // CachedImage for image items
     ],

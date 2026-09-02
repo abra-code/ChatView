@@ -11,6 +11,7 @@ A transcript above a composer. A `ChatTransport` (the only layer that knows a wi
 - Person-to-person / group chat (dual alignment): timestamps and day separators, sender names and avatars, delivery status with tap-to-retry, emoji reactions, replies, editing and deletion, member / call events, file and voice items, a typing indicator, and paged history.
 - Transports behind a registry: `local` (scripted echo / markdown / agentic demo) and `local-p2p` (scripted person-to-person / group demo) are built in; the `ChatViewACP` product adds `acp` (any Agent Client Protocol agent as a subprocess, macOS) and `acp-remote` (an ACP agent hosted on another machine, every platform including iOS), the `ChatViewOpenAI` product adds `openai-sse` (any OpenAI-compatible /v1/chat/completions endpoint), and a host registers its own protocol with `ChatTransportRegistry.shared.register(_:factory:)`.
 - Session restore in (through the `ChatContentSource` content channel) and incremental persistence out (one `.entry` host event per finalized transcript entry).
+- Find in conversation: a Cmd-F bar over the whole transcript (matches painted inside Markdown bodies by RichText's highlight layer, next / previous walking across messages, thoughts and tool calls opt-in), a headless `ChatSearch` over the same model with the same rules so a host can search saved transcripts it never renders, and a `search` content-source channel through which a host's own search field opens a conversation with its term already lit.
 
 ## Platforms
 
@@ -28,6 +29,12 @@ ChatView(configuration: ChatConfiguration(),
 ```
 
 The operational config (which transport, and its settings) is injected at runtime through your `ChatContentSource`'s config channel, never declared in static UI data: `{ "protocol": "local" }` is built in; link `ChatViewACP` / `ChatViewOpenAI` and call `ChatViewACP.register()` / `ChatViewOpenAI.register()` at launch for `"acp"` / `"openai-sse"`. A saved session restores through the same source's content channel; `readOnly` in the configuration makes a pure viewer.
+
+### Find
+
+The transcript find bar opens with Cmd-F (`find: false` in the configuration removes the bar and the shortcut). Matches inside Markdown are painted by RichText's draw-only highlight layer, so lighting up a long conversation re-lays-out nothing; next / previous walk the hits in transcript order across messages, opening a folded thought or tool card when the hit is inside it. The bar's menu widens the scope to thoughts and tool calls and toggles case, whole-word and diacritic matching.
+
+The same search is available with no view. `ChatSearch.matches(in:query:)` takes items or a decoded `ChatTranscript` and returns hits (item id, field, UTF-16 range, snippet) with exactly the rules the bar uses - Markdown bodies are searched as RENDERED text, so a hit found headless is the range the view highlights when that conversation is opened. `ChatItem.searchableText(scope:)` / `ChatTranscript.searchableText(scope:)` give an indexer the plain text a reader sees. A host with its own search field (a chat list filtered by a term) drives the bar through the content source's `observeChatSearch` channel: a String query runs the search, highlights, and presents the bar; "" dismisses it.
 
 ## Demo
 

@@ -18,6 +18,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import RichText
 
 /// The component's content channel. In an ActionUI host this is `states["content"]`, the same
 /// place Table / List keep their content: a host RESTORES a saved session by injecting a
@@ -78,6 +79,23 @@ public protocol ChatContentSource: AnyObject {
     ///
     /// Defaulted to a channel that never delivers, so existing hosts compile unchanged.
     func observeChatLead(_ handler: @escaping (Any?) -> Void) -> AnyCancellable
+
+    /// Observes the search channel: a query String for the transcript find. A non-empty value runs
+    /// the search, highlights the hits and (when the configuration enables the find bar) presents
+    /// the bar with that query; "" dismisses it. This is how a host's OWN search field - a chat
+    /// list filtered by a term - opens the conversation with the same term already lit, so the
+    /// reader lands on why the list matched.
+    ///
+    /// The value is always a String, never a dictionary: options belong to the bar's own toggles,
+    /// and a host that changed the value's shape between writes would trip the type check an
+    /// element-state store applies. nil (the key never set) is no opinion, not a dismissal. And
+    /// because a states channel re-delivers its current value on EVERY states change, a value equal
+    /// to the last one applied is ignored: the reader can close the bar without it springing back
+    /// the next time the host touches an unrelated key. To re-open with the same term, set "" and
+    /// then the term again.
+    ///
+    /// Defaulted to a channel that never delivers, so existing hosts compile unchanged.
+    func observeChatSearch(_ handler: @escaping (Any?) -> Void) -> AnyCancellable
 }
 
 public extension ChatContentSource {
@@ -85,6 +103,9 @@ public extension ChatContentSource {
         AnyCancellable {}
     }
     func observeChatLead(_ handler: @escaping (Any?) -> Void) -> AnyCancellable {
+        AnyCancellable {}
+    }
+    func observeChatSearch(_ handler: @escaping (Any?) -> Void) -> AnyCancellable {
         AnyCancellable {}
     }
 }
@@ -110,7 +131,9 @@ enum ChatContextState: Equatable {
 @MainActor
 final class ChatStore: ObservableObject {
 
-    @Published private(set) var items: [ChatItem] = []
+    @Published private(set) var items: [ChatItem] = [] {
+        didSet { refreshFindIfNeeded(previous: oldValue) }
+    }
     @Published private(set) var transcriptGeneration = 0   // bumped when the transcript is replaced wholesale (a conversation loaded in place), so the view can reset scroll/pin state for the new conversation
     @Published private(set) var isStreaming = false       // a reply turn is in flight
     @Published private(set) var awaitingReply = false      // a prompt was submitted but no reply event has arrived yet - the "connecting / thinking" gap before the first token. The view shows a spinner while awaitingReply && !isStreaming (isStreaming only flips true on the first streamed event, not at submit).
@@ -129,6 +152,13 @@ final class ChatStore: ObservableObject {
     @Published private(set) var typingParticipants: [TypingParticipant] = [] // who is currently typing (drives the typing row)
     @Published private(set) var hasEarlier: Bool = true                      // false once a history page reports no more
     @Published private(set) var isLoadingEarlier: Bool = false               // a history page is in flight
+    // Transcript find: the bar's state (query, hits, cursor). Recomputed when the query changes and
+    // when the FINALIZED text of the transcript changes - never per streaming delta.
+    @Published private(set) var find = ChatFindState()
+    private let findTextCache = ChatSearchTextCache()
+    private var lastAppliedSearchQuery: String?
+    private var lastRejectedSearchValue: String?
+    private static let findQueryDebounceKey = "find.query"
     @Published private(set) var connectionState: ChatConnectionState = .connecting  // link state; only a reportsConnectionState transport drives it (else the composer ignores it)
 
     /// A participant currently shown in the typing indicator. `id` is the sender key (senderID, or a
@@ -189,6 +219,7 @@ final class ChatStore: ObservableObject {
     // value already applied (a reappearance re-subscribes) does not double it.
     private var appendedItemIDs: Set<String> = []
     private var leadCancellable: AnyCancellable?
+    private var searchCancellable: AnyCancellable?
     // What the lead channel is holding for the next message: the host's current list, minus
     // anything already promoted out of it. Mirrors the channel rather than accumulating from it,
     // so a re-delivery of an unchanged value (the bridge republishes every channel on any state
@@ -361,6 +392,14 @@ final class ChatStore: ObservableObject {
         if leadCancellable == nil, let contentSource {
             leadCancellable = contentSource.observeChatLead { [weak self] value in
                 self?.reconcileLeadItems(value)
+            }
+        }
+
+        // The search channel: a host's query for the transcript find. Subscribed in readOnly too - a
+        // history viewer opened from a filtered list is the main reason it exists.
+        if searchCancellable == nil, let contentSource {
+            searchCancellable = contentSource.observeChatSearch { [weak self] value in
+                self?.reconcileSearchQuery(value)
             }
         }
 
@@ -861,6 +900,8 @@ final class ChatStore: ObservableObject {
         appendCancellable = nil
         leadCancellable?.cancel()
         leadCancellable = nil
+        searchCancellable?.cancel()
+        searchCancellable = nil
         configCancellable?.cancel()
         configCancellable = nil
         // The same close a re-configuration performs, for the same reason: the transport is being
@@ -1467,6 +1508,8 @@ final class ChatStore: ObservableObject {
     /// (no live continuations), the streaming / permission / buffer state is cleared, and the
     /// status surfaces are restored. Appended turns (if a transport runs) land after the loaded items.
     private func applyLoadedTranscript(_ transcript: ChatTranscript) {
+        // A conversation replaced wholesale: rendered bodies of the old one are dead weight.
+        findTextCache.removeAll()
         // Both restore paths funnel through here, so this is the one place that sees every decode.
         // The placeholder rows make the loss visible to the READER of the conversation; this makes
         // it searchable for whoever has to work out why an entry is unreadable.
@@ -2151,4 +2194,249 @@ private extension ChatMessage {
 private struct MessageIDConfirmation: Encodable {
     let localID: String
     let serverID: String
+}
+
+// MARK: - Find (transcript search)
+
+/// The transcript find bar's state. The store owns and recomputes it; the view renders it and hands
+/// each row the ranges that belong to it. `hits` are in transcript order, so next / previous walk the
+/// conversation top to bottom regardless of which item a hit is in.
+struct ChatFindState: Equatable {
+    var query: String = ""
+    var options: RichTextSearchOptions = .default
+    var scope: ChatSearchScope = .default
+    /// Whether the bar is shown. Independent of `query`: a host-injected query with the bar disabled
+    /// highlights without presenting.
+    var isPresented = false
+    /// Bumped by every `presentFind(focus: true)`, so a repeat Cmd-F while the bar is open still puts
+    /// focus back in its field (a Bool that is already true would publish nothing). The bar records the
+    /// request it honored in `focusHonored`, so a bar re-created later does not honor it twice.
+    var focusRequests = 0
+    var focusHonored = 0
+    var hits: [ChatSearchHit] = []
+    /// Index into `hits` of the hit the reader is on; nil when there are none.
+    var currentIndex: Int?
+    /// Hit indices grouped by item, for the rows.
+    var hitIndicesByItem: [String: [Int]] = [:]
+
+    var current: ChatSearchHit? {
+        guard let currentIndex, hits.indices.contains(currentIndex) else {
+            return nil
+        }
+        return hits[currentIndex]
+    }
+
+    /// "3 of 12", "No matches", or "" for an empty (or blank) query.
+    var summary: String {
+        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return ""
+        }
+        guard let currentIndex, !hits.isEmpty else {
+            return "No matches"
+        }
+        return "\(currentIndex + 1) of \(hits.count)"
+    }
+
+    /// The ranges to paint in one field of one item, and which of them is the current hit (an index
+    /// into the returned ranges, not into `hits`). nil when the item has no hit in that field.
+    func ranges(for itemID: String, field: ChatSearchField) -> (ranges: [NSRange], current: Int?)? {
+        guard let indices = hitIndicesByItem[itemID] else {
+            return nil
+        }
+        var ranges: [NSRange] = []
+        var current: Int?
+        for index in indices where hits[index].field == field {
+            if index == currentIndex {
+                current = ranges.count
+            }
+            ranges.append(hits[index].range)
+        }
+        return ranges.isEmpty ? nil : (ranges, current)
+    }
+
+    /// The same, as what `RichText.findHighlights` takes.
+    func highlights(for itemID: String, field: ChatSearchField = .body,
+                    style: RichTextHighlightStyle) -> RichTextHighlights? {
+        guard let found = ranges(for: itemID, field: field) else {
+            return nil
+        }
+        return RichTextHighlights(ranges: found.ranges, current: found.current, style: style)
+    }
+
+    /// Replace the hits, keeping the reader on the hit they were on when it survived (the same item,
+    /// field and range), or on the same place when only the item's id changed (the server confirming
+    /// an optimistic message's id), and otherwise going back to the first.
+    mutating func setHits(_ newHits: [ChatSearchHit]) {
+        let previous = current
+        let previousIndex = currentIndex
+        hits = newHits
+        var byItem: [String: [Int]] = [:]
+        for (index, hit) in newHits.enumerated() {
+            byItem[hit.itemID, default: []].append(index)
+        }
+        hitIndicesByItem = byItem
+        if newHits.isEmpty {
+            currentIndex = nil
+        } else if let previous, let kept = newHits.firstIndex(of: previous) {
+            currentIndex = kept
+        } else if let previous, let previousIndex, newHits.indices.contains(previousIndex),
+                  newHits[previousIndex].field == previous.field, newHits[previousIndex].range == previous.range {
+            currentIndex = previousIndex
+        } else {
+            currentIndex = 0
+        }
+    }
+
+    mutating func step(by delta: Int) {
+        guard !hits.isEmpty else {
+            return
+        }
+        let count = hits.count
+        let base = currentIndex ?? (delta > 0 ? -1 : 0)
+        currentIndex = ((base + delta) % count + count) % count
+    }
+}
+
+extension ChatStore {
+
+    /// Set the query. With `debounce` > 0 (the bar, per keystroke) the query is published at once so
+    /// the field stays responsive, and the search itself runs once typing pauses; a host's channel
+    /// and the tests pass 0 and get the hits immediately.
+    func setFindQuery(_ query: String, debounce: TimeInterval = 0) {
+        guard find.query != query else {
+            return
+        }
+        find.query = query
+        if debounce > 0 {
+            scheduler.schedule(Self.findQueryDebounceKey, after: debounce) { [weak self] in
+                self?.recomputeFind()
+            }
+        } else {
+            scheduler.cancel(Self.findQueryDebounceKey)
+            recomputeFind()
+        }
+    }
+
+    func setFindOptions(_ options: RichTextSearchOptions) {
+        guard find.options != options else {
+            return
+        }
+        find.options = options
+        recomputeFind()
+    }
+
+    func setFindScope(_ scope: ChatSearchScope) {
+        guard find.scope != scope else {
+            return
+        }
+        find.scope = scope
+        recomputeFind()
+    }
+
+    func findNext() {
+        find.step(by: 1)
+    }
+
+    func findPrevious() {
+        find.step(by: -1)
+    }
+
+    /// Show the bar. With `focus` (the reader's Cmd-F) its field takes focus, again if the bar is
+    /// already open; without it (a host's search channel) the bar appears and focus stays where the
+    /// reader is typing - in the host's own search field, which is what drove this.
+    func presentFind(focus: Bool = true) {
+        find.isPresented = true
+        if focus {
+            find.focusRequests += 1
+        }
+    }
+
+    /// The bar took the focus `focusRequests` asked for.
+    func markFindFocusHonored() {
+        find.focusHonored = find.focusRequests
+    }
+
+    /// Hide the bar and clear the query, so nothing stays painted.
+    func dismissFind() {
+        find.isPresented = false
+        setFindQuery("")
+    }
+
+    /// The search channel's value: a query String ("" dismisses; nil is no opinion). A non-empty
+    /// query runs and presents the bar when the configuration has one; with `find` off it only
+    /// highlights. A value equal to the last one applied is ignored - the channel re-delivers on
+    /// every states change, and the reader's own close must stick.
+    private func reconcileSearchQuery(_ value: Any?) {
+        guard let value else {
+            return
+        }
+        guard let query = value as? String else {
+            // Said once per distinct bad value, not once per states change (the channel re-delivers).
+            let description = String(describing: value)
+            if description != lastRejectedSearchValue {
+                lastRejectedSearchValue = description
+                logger.log("Chat search value is not a String; ignoring", .warning)
+            }
+            return
+        }
+        guard query != lastAppliedSearchQuery else {
+            return
+        }
+        lastAppliedSearchQuery = query
+        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if find.isPresented || !find.query.isEmpty {
+                dismissFind()
+            }
+            return
+        }
+        setFindQuery(query)
+        if config.find {
+            presentFind(focus: false)
+        }
+    }
+
+    private func recomputeFind() {
+        findTextCache.retain(ids: Set(items.map(\.id)))
+        let hits = ChatSearch.matches(in: items, query: find.query, options: find.options,
+                                      scope: find.scope, cache: findTextCache)
+        find.setHits(hits)
+    }
+
+    /// Called on every `items` change. Re-searches only when the text the search looks at changed. Most
+    /// items are untouched between two values of `items` and compare equal by storage identity, so the
+    /// common streaming delta costs one pass of pointer compares; a changed item is asked for its
+    /// searchable fields, and a streaming message or a running tool call has none, so a delta on one
+    /// never re-runs the search - the item is searched when it settles.
+    private func refreshFindIfNeeded(previous: [ChatItem]) {
+        guard !find.query.isEmpty else {
+            return
+        }
+        guard findableTextChanged(from: previous, to: items) else {
+            return
+        }
+        recomputeFind()
+    }
+
+    private func findableTextChanged(from old: [ChatItem], to new: [ChatItem]) -> Bool {
+        guard old.count == new.count else {
+            return true
+        }
+        let scope = find.scope
+        for (before, after) in zip(old, new) where before != after {
+            // A re-keyed item (the server confirming an optimistic message's id) keeps its text and
+            // loses its hits, which are stored by id.
+            if before.id != after.id {
+                return true
+            }
+            let fieldsBefore = ChatSearch.searchableFields(of: before, scope: scope)
+            let fieldsAfter = ChatSearch.searchableFields(of: after, scope: scope)
+            if fieldsBefore.count != fieldsAfter.count {
+                return true
+            }
+            for (left, right) in zip(fieldsBefore, fieldsAfter) where left.0 != right.0 || left.1 != right.1 {
+                return true
+            }
+        }
+        return false
+    }
 }
