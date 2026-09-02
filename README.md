@@ -32,9 +32,11 @@ The operational config (which transport, and its settings) is injected at runtim
 
 ### Find
 
-The transcript find bar opens with Cmd-F (`find: false` in the configuration removes the bar and the shortcut). Matches inside Markdown are painted by RichText's draw-only highlight layer, so lighting up a long conversation re-lays-out nothing; next / previous walk the hits in transcript order across messages, opening a folded thought or tool card when the hit is inside it. The bar's menu widens the scope to thoughts and tool calls and toggles case, whole-word and diacritic matching.
+The transcript find bar opens with Cmd-F (`showFindBar: false` in the configuration removes the bar and the shortcut). Matches inside Markdown are painted by RichText's draw-only highlight layer, so lighting up a long conversation re-lays-out nothing; next / previous walk the hits in transcript order across messages, opening a folded thought or tool card when the hit is inside it. The bar's menu widens the scope to thoughts and tool calls and toggles case, whole-word and diacritic matching.
 
 The same search is available with no view. `ChatSearch.matches(in:query:)` takes items or a decoded `ChatTranscript` and returns hits (item id, field, UTF-16 range, snippet) with exactly the rules the bar uses - Markdown bodies are searched as RENDERED text, so a hit found headless is the range the view highlights when that conversation is opened. `ChatItem.searchableText(scope:)` / `ChatTranscript.searchableText(scope:)` give an indexer the plain text a reader sees. A host with its own search field (a chat list filtered by a term) drives the bar through the content source's `observeChatSearch` channel: a String query runs the search, highlights, and presents the bar; "" dismisses it.
+
+The Android port has the same pieces (`ChatSearch`, `ChatFindState` on the store, the `showFindBar` key, the `search` channel); the bar is opened by a search button floated at the transcript's top edge instead of Cmd-F, and a session marker is not searched there until its row draws something.
 
 ## Demo
 

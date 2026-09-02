@@ -132,7 +132,7 @@ public struct ChatConfiguration {
 
     // Session transcript seam.
     public let readOnly: Bool           // history-viewer mode: no composer / menus, no transport start
-    public let find: Bool               // the transcript find bar (Cmd-F); a host-injected `search` query still highlights when off
+    public let showFindBar: Bool        // the transcript find bar (Cmd-F); a host-injected `search` query still highlights when off
     public let initialContentRaw: Any?  // an initial transcript verbatim (a preview / testing convenience,
                                         // NOT the production restore path); the store decodes it ONCE at start
 
@@ -174,7 +174,7 @@ public struct ChatConfiguration {
                 submitOn: SubmitPolicy = .return,
                 surfaces: Surfaces = Surfaces(),
                 readOnly: Bool = false,
-                find: Bool = true,
+                showFindBar: Bool = true,
                 initialContent: Any? = nil,
                 attachEnabled: Bool = false,
                 emitsEntryEvents: Bool = false) {
@@ -191,7 +191,7 @@ public struct ChatConfiguration {
         self.submitOn = submitOn
         self.surfaces = surfaces
         self.readOnly = readOnly
-        self.find = find
+        self.showFindBar = showFindBar
         self.initialContentRaw = initialContent
         self.attachEnabled = attachEnabled
         self.emitsEntryEvents = emitsEntryEvents
@@ -245,7 +245,7 @@ public struct ChatConfiguration {
         )
 
         readOnly = (dictionary["readOnly"] as? Bool) ?? false
-        find = (dictionary["find"] as? Bool) ?? true
+        showFindBar = (dictionary["showFindBar"] as? Bool) ?? true
         // A pre-populated transcript in `content` - a preview / testing convenience only.
         // The production restore path is the runtime content channel (ChatContentSource),
         // which the store observes separately; a static UI declaration should not carry

@@ -130,7 +130,7 @@ public struct ChatView: View {
             scrollToFindHit(hit)
         }
         .background {
-            if config.find {
+            if config.showFindBar {
                 // An invisible button carries Cmd-F: the one element whose shortcut works on every
                 // platform without a menu.
                 Button("Find") { store.presentFind() }

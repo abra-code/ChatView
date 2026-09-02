@@ -2390,7 +2390,7 @@ extension ChatStore {
             return
         }
         setFindQuery(query)
-        if config.find {
+        if config.showFindBar {
             presentFind(focus: false)
         }
     }

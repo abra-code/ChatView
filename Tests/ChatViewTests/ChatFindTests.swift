@@ -162,7 +162,7 @@ final class ChatFindTests: XCTestCase {
 
     private func makeStore(_ source: FakeFindSource, find: Bool = true, readOnly: Bool = true,
                            scheduler: ManualScheduler? = nil) -> ChatStore {
-        let store = ChatStore(config: ChatConfiguration(readOnly: readOnly, find: find), logger: FindTestLogger(),
+        let store = ChatStore(config: ChatConfiguration(readOnly: readOnly, showFindBar: find), logger: FindTestLogger(),
                               contentSource: source, scheduler: scheduler)
         store.start()
         return store
@@ -449,9 +449,9 @@ final class ChatFindTests: XCTestCase {
     // MARK: - Configuration
 
     func testFindConfigurationKeyDefaultsOn() {
-        XCTAssertTrue(ChatConfiguration(dictionary: [:], logger: FindTestLogger()).find)
-        XCTAssertFalse(ChatConfiguration(dictionary: ["find": false], logger: FindTestLogger()).find)
-        XCTAssertTrue(ChatConfiguration(dictionary: ["find": "no"], logger: FindTestLogger()).find, "a non-Bool is ignored")
-        XCTAssertTrue(ChatConfiguration().find)
+        XCTAssertTrue(ChatConfiguration(dictionary: [:], logger: FindTestLogger()).showFindBar)
+        XCTAssertFalse(ChatConfiguration(dictionary: ["showFindBar": false], logger: FindTestLogger()).showFindBar)
+        XCTAssertTrue(ChatConfiguration(dictionary: ["showFindBar": "no"], logger: FindTestLogger()).showFindBar, "a non-Bool is ignored")
+        XCTAssertTrue(ChatConfiguration().showFindBar)
     }
 }
