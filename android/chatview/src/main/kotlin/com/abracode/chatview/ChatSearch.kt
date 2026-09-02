@@ -17,6 +17,10 @@ import com.abracode.richtext.search.RichTextSearchOptions
 // Markdown bodies are searched through RichText's engine over the RENDERED text (the text the message's
 // composables draw: RichTextRenderedText), because that is the only form in which a range is meaningful for
 // highlighting. Plain fields (a tool-call title, a caption, a file name) are searched as displayed.
+//
+// The options are RichText's: case, diacritics, whole word, and `regularExpression`, which reads the query as a
+// pattern (java.util.regex here, ICU on Apple; the common ECMAScript subset behaves the same on both) and is
+// applied field by field, so `^` and `$` bound lines within one field's text.
 
 /** Which parts of a transcript a search looks at. Bodies and captions by default; reasoning and tools opt-in. */
 enum class ChatSearchScope {

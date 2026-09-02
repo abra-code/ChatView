@@ -20,6 +20,7 @@ import androidx.compose.runtime.mutableStateOf
 import com.abracode.richtext.rendering.RichTextHighlightStyle
 import com.abracode.richtext.rendering.RichTextHighlights
 import com.abracode.richtext.search.RichTextRange
+import com.abracode.richtext.search.RichTextSearch
 import com.abracode.richtext.search.RichTextSearchOptions
 import kotlin.time.Duration.Companion.milliseconds
 import androidx.compose.runtime.setValue
@@ -1680,10 +1681,14 @@ data class ChatFindState(
 ) {
     val current: ChatSearchHit? get() = currentIndex?.let { hits.getOrNull(it) }
 
-    /** "3 of 12", "No matches", or "" for an empty (or blank) query. */
+    /**
+     * "3 of 12", "No matches", or "" for an empty (or blank) query; "Invalid expression" for a regular expression
+     * that does not compile, which is not the same as the conversation lacking it.
+     */
     val summary: String
         get() {
             if (query.isBlank()) return ""
+            if (!RichTextSearch.isValidQuery(query, options)) return "Invalid expression"
             val index = currentIndex ?: return "No matches"
             if (hits.isEmpty()) return "No matches"
             return "${index + 1} of ${hits.size}"

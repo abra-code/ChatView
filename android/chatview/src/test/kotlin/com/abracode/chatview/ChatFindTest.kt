@@ -82,6 +82,12 @@ class ChatFindTest {
     @Test fun optionsPassThrough() {
         val sensitive = ChatSearch.matches(items, "Fox", options = RichTextSearchOptions(caseSensitive = true))
         assertEquals(listOf("m2", "s1"), sensitive.map { it.itemID })
+        // A regular expression, matched per field with the same case rule.
+        val pattern = ChatSearch.matches(items, "F[aeiou]x", options = RichTextSearchOptions(caseSensitive = true, regularExpression = true))
+        assertEquals(listOf("m2", "s1"), pattern.map { it.itemID })
+        val anchored = ChatSearch.matches(items, "^Fox", options = RichTextSearchOptions(regularExpression = true), scope = ChatSearchScope.All)
+        assertEquals("anchors bound each field's own text", listOf("s1", "f1"), anchored.map { it.itemID })
+        assertEquals(emptyList<ChatSearchHit>(), ChatSearch.matches(items, "F[ox", options = RichTextSearchOptions(regularExpression = true)))
     }
 
     @Test fun searchableTextForIndexers() {
@@ -254,6 +260,19 @@ class ChatFindTest {
         store.setFindQuery("fox")
         store.send("another fox")
         assertEquals(2, store.find.hits.size)
+    }
+
+    @Test fun regularExpressionOptionAndInvalidPattern() {
+        val store = makeStore(FakeContentSource(seed = transcriptJson(items)))
+        store.setFindOptions(RichTextSearchOptions(regularExpression = true))
+        store.setFindQuery("f(ox")
+        assertEquals("Invalid expression", store.find.summary)
+        assertTrue(store.find.hits.isEmpty())
+        store.setFindQuery("f[o]x")
+        assertEquals("1 of 6", store.find.summary)
+        // Off again: the same characters are a literal that the conversation does not contain.
+        store.setFindOptions(RichTextSearchOptions())
+        assertEquals("No matches", store.find.summary)
     }
 
     @Test fun stepOnNothingIsANoOp() {

@@ -195,6 +195,9 @@ internal fun ChatFindBar(store: ChatStore, modifier: Modifier = Modifier) {
                     FindOption("Match diacritics", find.options.diacriticSensitive) {
                         store.setFindOptions(find.options.copy(diacriticSensitive = it))
                     }
+                    FindOption("Regular expression", find.options.regularExpression) {
+                        store.setFindOptions(find.options.copy(regularExpression = it))
+                    }
                     FindOption("Include thoughts", ChatSearchScope.THOUGHTS in find.scope) {
                         store.setFindScope(if (it) find.scope + ChatSearchScope.THOUGHTS else find.scope - ChatSearchScope.THOUGHTS)
                     }

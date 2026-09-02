@@ -65,6 +65,7 @@ struct ChatFindBar: View {
                 Toggle("Match Case", isOn: optionBinding(\.caseSensitive))
                 Toggle("Whole Words", isOn: optionBinding(\.wholeWord))
                 Toggle("Match Diacritics", isOn: optionBinding(\.diacriticSensitive))
+                Toggle("Regular Expression", isOn: optionBinding(\.regularExpression))
                 Divider()
                 Toggle("Include Thoughts", isOn: scopeBinding(.thoughts))
                 Toggle("Include Tool Calls", isOn: scopeBinding(.toolCalls))

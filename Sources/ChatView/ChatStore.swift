@@ -2285,10 +2285,14 @@ struct ChatFindState: Equatable {
         return hits[currentIndex]
     }
 
-    /// "3 of 12", "No matches", or "" for an empty (or blank) query.
+    /// "3 of 12", "No matches", or "" for an empty (or blank) query; "Invalid expression" for a regular
+    /// expression that does not compile, which is not the same as the conversation lacking it.
     var summary: String {
         if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return ""
+        }
+        if !RichTextSearch.isValidQuery(query, options: options) {
+            return "Invalid expression"
         }
         guard let currentIndex, !hits.isEmpty else {
             return "No matches"

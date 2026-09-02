@@ -11,6 +11,10 @@
 // text does. Plain fields (a tool-call title, a system caption, a file name) are searched as they are
 // displayed. `ChatItem.searchableText(scope:)` is the indexer-facing form: everything the item shows,
 // as plain text, for a host that wants to build its own index rather than call this per query.
+//
+// The options are RichText's: case, diacritics, whole word, and `regularExpression`, which reads the
+// query as a pattern (ICU here, java.util.regex on Android; the common ECMAScript subset behaves the
+// same on both) and is applied field by field, so `^` and `$` bound lines within one field's text.
 
 import Foundation
 import RichText

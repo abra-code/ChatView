@@ -148,6 +148,12 @@ final class ChatFindTests: XCTestCase {
     func testOptionsPassThrough() {
         let sensitive = ChatSearch.matches(in: items, query: "Fox", options: RichTextSearchOptions(caseSensitive: true))
         XCTAssertEqual(sensitive.map(\.itemID), ["m2", "s1"])
+        // A regular expression, matched per field with the same case rule.
+        let pattern = ChatSearch.matches(in: items, query: "F[aeiou]x", options: RichTextSearchOptions(caseSensitive: true, regularExpression: true))
+        XCTAssertEqual(pattern.map(\.itemID), ["m2", "s1"])
+        let anchored = ChatSearch.matches(in: items, query: "^Fox", options: RichTextSearchOptions(regularExpression: true), scope: .all)
+        XCTAssertEqual(anchored.map(\.itemID), ["s1", "f1"], "anchors bound each field's own text")
+        XCTAssertEqual(ChatSearch.matches(in: items, query: "F[ox", options: RichTextSearchOptions(regularExpression: true)), [])
     }
 
     func testSearchableTextForIndexers() {
@@ -261,6 +267,21 @@ final class ChatFindTests: XCTestCase {
         store.dismissFind()
         source.content = transcriptJSON([message("m9", "fox nine")])
         XCTAssertTrue(store.find.hits.isEmpty)
+    }
+
+    func testRegularExpressionOptionAndInvalidPattern() {
+        let source = FakeFindSource()
+        source.content = transcriptJSON(items)
+        let store = makeStore(source)
+        store.setFindOptions(RichTextSearchOptions(regularExpression: true))
+        store.setFindQuery("f(ox")
+        XCTAssertEqual(store.find.summary, "Invalid expression")
+        XCTAssertTrue(store.find.hits.isEmpty)
+        store.setFindQuery("f[o]x")
+        XCTAssertEqual(store.find.summary, "1 of 6")
+        // Off again: the same characters are a literal that the conversation does not contain.
+        store.setFindOptions(RichTextSearchOptions())
+        XCTAssertEqual(store.find.summary, "No matches")
     }
 
     func testStepOnNothingIsANoOp() {
