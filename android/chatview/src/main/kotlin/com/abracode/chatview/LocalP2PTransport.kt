@@ -189,6 +189,7 @@ class LocalP2PTransport(
                         id = "photo-1", role = ChatRole.REMOTE, senderID = peerID, senderName = peerName,
                         timestamp = stamp(daysAgo = 1, minute = 2),
                         image = ChatImage(url = picture.url, alt = "The lunch spot", pixelSize = picture.pixelSize),
+                        caption = "This one - the patio is *great*.",
                         reactions = listOf(Reaction(emoji = "\u2764\uFE0F", count = 1, mine = true)),
                     ),
                 ),
@@ -223,6 +224,7 @@ class LocalP2PTransport(
                     timestamp = stamp(daysAgo = 0, minute = 5), name = "itinerary.pdf",
                     sizeBytes = 284_160, url = "https://example.test/itinerary.pdf",
                     kind = ChatFile.Kind.FILE, transferStatus = FileTransferStatus.COMPLETED,
+                    caption = "Saturday's itinerary, draft 2",
                 ),
             ),
         )

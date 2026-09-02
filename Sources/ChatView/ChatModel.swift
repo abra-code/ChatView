@@ -230,8 +230,9 @@ public struct ChatImage: Sendable, Equatable, Codable {
 /// An image transcript ITEM: `ChatImage` (the picture) plus what a person-to-person photo carries beside
 /// it - who sent it, when, its delivery state and its reactions - the same identity and delivery fields a
 /// `ChatFile` has. An agent's image (`ChatEvent.image`) fills only `id`, `role` and `image`; a photo in a
-/// person-to-person chat arrives whole through `ChatEvent.imageAdded`. `reactions` is the aggregated emoji
-/// reaction set, replaced whole by `.reactionsChanged`, exactly as on a message.
+/// person-to-person chat arrives whole through `ChatEvent.imageAdded`. `caption` is the text sent with the
+/// photo (Markdown, like a message body), drawn under the picture in the same bubble. `reactions` is the
+/// aggregated emoji reaction set, replaced whole by `.reactionsChanged`, exactly as on a message.
 public struct ChatImageItem: Identifiable, Equatable, Sendable, Codable {
     public let id: String
     public let role: ChatRole
@@ -240,11 +241,12 @@ public struct ChatImageItem: Identifiable, Equatable, Sendable, Codable {
     public var timestamp: String?
     public var status: MessageStatus?
     public let image: ChatImage
+    public var caption: String?
     public var reactions: [Reaction]?
 
     public init(id: String, role: ChatRole, senderID: String? = nil, senderName: String? = nil,
                 timestamp: String? = nil, status: MessageStatus? = nil, image: ChatImage,
-                reactions: [Reaction]? = nil) {
+                caption: String? = nil, reactions: [Reaction]? = nil) {
         self.id = id
         self.role = role
         self.senderID = senderID
@@ -252,6 +254,7 @@ public struct ChatImageItem: Identifiable, Equatable, Sendable, Codable {
         self.timestamp = timestamp
         self.status = status
         self.image = image
+        self.caption = caption
         self.reactions = reactions
     }
 
@@ -259,7 +262,7 @@ public struct ChatImageItem: Identifiable, Equatable, Sendable, Codable {
     // in a transcript; the person-to-person fields are optional and omitted when nil, so an agent's image
     // encodes exactly as before.
     private enum CodingKeys: String, CodingKey {
-        case id, role, senderID, senderName, timestamp, status, image, reactions
+        case id, role, senderID, senderName, timestamp, status, image, caption, reactions
     }
 
     public init(from decoder: Decoder) throws {
@@ -271,6 +274,7 @@ public struct ChatImageItem: Identifiable, Equatable, Sendable, Codable {
         self.timestamp = try container.decodeIfPresent(String.self, forKey: .timestamp)
         self.status = try container.decodeIfPresent(MessageStatus.self, forKey: .status)
         self.image = try container.decode(ChatImage.self, forKey: .image)
+        self.caption = try container.decodeIfPresent(String.self, forKey: .caption)
         self.reactions = try container.decodeIfPresent([Reaction].self, forKey: .reactions)
     }
 
@@ -283,6 +287,7 @@ public struct ChatImageItem: Identifiable, Equatable, Sendable, Codable {
         try container.encodeIfPresent(timestamp, forKey: .timestamp)
         try container.encodeIfPresent(status, forKey: .status)
         try container.encode(image, forKey: .image)
+        try container.encodeIfPresent(caption, forKey: .caption)
         try container.encodeIfPresent(reactions, forKey: .reactions)
     }
 }
@@ -606,8 +611,9 @@ public enum FileTransferStatus: String, Sendable, Hashable, Codable {
 /// when available (local or downloaded); while it is still arriving, `transferStatus` /
 /// `progress` drive the transfer UI. `durationSeconds` is the clip length for a voice
 /// message. `status` is the message-level delivery state (as on `ChatMessage`), separate
-/// from `transferStatus` (the byte-transfer state). `reactions` is the aggregated emoji
-/// reaction set, replaced whole by `.reactionsChanged`, exactly as on a message.
+/// from `transferStatus` (the byte-transfer state). `caption` is the text sent with the file
+/// (Markdown, like a message body), drawn under the file card in the same bubble. `reactions` is
+/// the aggregated emoji reaction set, replaced whole by `.reactionsChanged`, exactly as on a message.
 public struct ChatFile: Identifiable, Equatable, Sendable, Codable {
     public enum Kind: String, Sendable, Codable {
         case file, voice
@@ -625,13 +631,14 @@ public struct ChatFile: Identifiable, Equatable, Sendable, Codable {
     public let durationSeconds: Int?
     public var transferStatus: FileTransferStatus
     public var progress: Double?      // 0...1 while transferring; nil when unknown / not applicable
+    public var caption: String?       // the text sent with the file
     public var reactions: [Reaction]? // aggregated emoji reactions
 
     public init(id: String, role: ChatRole, senderID: String? = nil, senderName: String? = nil,
                 timestamp: String? = nil, status: MessageStatus? = nil, name: String,
                 sizeBytes: Int? = nil, url: URL? = nil, kind: Kind = .file,
                 durationSeconds: Int? = nil, transferStatus: FileTransferStatus = .completed,
-                progress: Double? = nil, reactions: [Reaction]? = nil) {
+                progress: Double? = nil, caption: String? = nil, reactions: [Reaction]? = nil) {
         self.id = id
         self.role = role
         self.senderID = senderID
@@ -645,11 +652,12 @@ public struct ChatFile: Identifiable, Equatable, Sendable, Codable {
         self.durationSeconds = durationSeconds
         self.transferStatus = transferStatus
         self.progress = progress
+        self.caption = caption
         self.reactions = reactions
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, role, senderID, senderName, timestamp, status, name, sizeBytes, url, kind, durationSeconds, transferStatus, progress, reactions
+        case id, role, senderID, senderName, timestamp, status, name, sizeBytes, url, kind, durationSeconds, transferStatus, progress, caption, reactions
     }
 
     public init(from decoder: Decoder) throws {
@@ -667,6 +675,7 @@ public struct ChatFile: Identifiable, Equatable, Sendable, Codable {
         self.durationSeconds = try container.decodeIfPresent(Int.self, forKey: .durationSeconds)
         self.transferStatus = try container.decodeIfPresent(FileTransferStatus.self, forKey: .transferStatus) ?? .completed
         self.progress = try container.decodeIfPresent(Double.self, forKey: .progress)
+        self.caption = try container.decodeIfPresent(String.self, forKey: .caption)
         self.reactions = try container.decodeIfPresent([Reaction].self, forKey: .reactions)
     }
 
@@ -685,6 +694,7 @@ public struct ChatFile: Identifiable, Equatable, Sendable, Codable {
         try container.encodeIfPresent(durationSeconds, forKey: .durationSeconds)
         try container.encode(transferStatus, forKey: .transferStatus)
         try container.encodeIfPresent(progress, forKey: .progress)
+        try container.encodeIfPresent(caption, forKey: .caption)
         try container.encodeIfPresent(reactions, forKey: .reactions)
     }
 }
@@ -1151,6 +1161,26 @@ public extension ChatItem {
     }
 }
 
+/// What a reply quote or a banner says about a photo or a file: the caption when there is one, else the
+/// file name, else the photo's alt text, else "Photo" - each run through the caller's excerpt rule, the
+/// same one a message body gets. One place, so the store's reply reference and the composer's banner
+/// cannot disagree.
+enum ChatItemExcerpt {
+    static func file(_ file: ChatFile, excerpt: (String) -> String) -> String {
+        if let caption = file.caption, !caption.isEmpty {
+            return excerpt(caption)
+        }
+        return excerpt(file.name)
+    }
+
+    static func image(_ item: ChatImageItem, excerpt: (String) -> String) -> String {
+        if let caption = item.caption, !caption.isEmpty {
+            return excerpt(caption)
+        }
+        return item.image.alt.isEmpty ? "Photo" : excerpt(item.image.alt)
+    }
+}
+
 extension ChatItem {
     /// This item carrying `stamp` as its timestamp if it arrived without one, for every kind that
     /// has a timestamp to carry. An item that already has one keeps it, and the kinds that have
@@ -1177,7 +1207,7 @@ extension ChatItem {
                                   name: file.name, sizeBytes: file.sizeBytes, url: file.url,
                                   kind: file.kind, durationSeconds: file.durationSeconds,
                                   transferStatus: file.transferStatus, progress: file.progress,
-                                  reactions: file.reactions))
+                                  caption: file.caption, reactions: file.reactions))
         case .memberEvent(let event):
             guard event.timestamp == nil else { return self }
             return .memberEvent(MemberEvent(id: event.id, timestamp: stamp, kind: event.kind,

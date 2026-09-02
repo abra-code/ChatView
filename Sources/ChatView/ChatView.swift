@@ -579,10 +579,28 @@ public struct ChatView: View {
         store.scrolledNearTop()
     }
 
-    private func beginReply(_ message: ChatMessage) {
+    /// Starts a reply to a message, a photo or a file: the banner quotes the body, the caption, or the
+    /// item's name in that order (`ChatItemExcerpt`), attributed to the resolved sender.
+    private func beginReply(_ itemID: String) {
+        guard let item = store.items.first(where: { $0.id == itemID }) else {
+            return
+        }
+        let target: ReplyTarget
+        switch item {
+        case .message(let message):
+            target = ReplyTarget(id: message.id, excerpt: replyExcerpt(message.text),
+                                 sender: resolvedName(role: message.role, senderID: message.senderID, explicit: message.senderName))
+        case .file(let file):
+            target = ReplyTarget(id: file.id, excerpt: ChatItemExcerpt.file(file, excerpt: replyExcerpt),
+                                 sender: resolvedName(role: file.role, senderID: file.senderID, explicit: file.senderName))
+        case .image(let photo):
+            target = ReplyTarget(id: photo.id, excerpt: ChatItemExcerpt.image(photo, excerpt: replyExcerpt),
+                                 sender: resolvedName(role: photo.role, senderID: photo.senderID, explicit: photo.senderName))
+        default:
+            return
+        }
         editTargetID = nil
-        let sender = resolvedName(role: message.role, senderID: message.senderID, explicit: message.senderName)
-        replyTarget = ReplyTarget(id: message.id, excerpt: replyExcerpt(message.text), sender: sender)
+        replyTarget = target
     }
 
     private func beginEdit(_ message: ChatMessage) {

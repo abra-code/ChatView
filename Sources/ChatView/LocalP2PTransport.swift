@@ -177,6 +177,7 @@ final class LocalP2PTransport: ChatTransport, @unchecked Sendable {
             events.append(.imageAdded(ChatImageItem(id: "photo-1", role: .remote, senderID: peerID, senderName: peerName,
                                                     timestamp: Self.stamp(daysAgo: 1, minute: 2),
                                                     image: ChatImage(url: picture.url, alt: "The lunch spot", pixelSize: picture.pixelSize),
+                                                    caption: "This one - the patio is *great*.",
                                                     reactions: [Reaction(emoji: "\u{2764}\u{FE0F}", count: 1, mine: true)])))
         }
         events.append(.messageReceived(ownMessage(id: "seed-3", text: "Yes! Sounds perfect.",
@@ -194,7 +195,8 @@ final class LocalP2PTransport: ChatTransport, @unchecked Sendable {
         events.append(.fileAdded(ChatFile(id: "file-1", role: .remote, senderID: peerID, senderName: peerName,
                                           timestamp: Self.stamp(daysAgo: 0, minute: 5), name: "itinerary.pdf",
                                           sizeBytes: 284_160, url: URL(string: "https://example.test/itinerary.pdf"),
-                                          kind: .file, transferStatus: .completed)))
+                                          kind: .file, transferStatus: .completed,
+                                          caption: "Saturday's itinerary, draft 2")))
         events.append(.fileAdded(ChatFile(id: "voice-1", role: .remote, senderID: peerID, senderName: peerName,
                                           timestamp: Self.stamp(daysAgo: 0, minute: 6), name: "voice-message.m4a",
                                           sizeBytes: 51_200, url: URL(string: "https://example.test/voice.m4a"),

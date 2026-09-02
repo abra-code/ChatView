@@ -120,7 +120,12 @@ object ChatSearch {
                 // The card renders the detail through the same cap the search must honor.
                 fields.add(ChatSearchField.BODY to ToolDetailText.capped(call.contentText))
             }
-            is ChatItem.Image -> return emptyList()
+            is ChatItem.Image -> {
+                // A photo's caption is a body like a message's; a photo without one shows no text.
+                val caption = item.item.caption
+                if (ChatSearchScope.MESSAGES !in scope || caption == null) return emptyList()
+                fields.add(ChatSearchField.BODY to caption)
+            }
             is ChatItem.System -> {
                 if (ChatSearchScope.MESSAGES !in scope) return emptyList()
                 fields.add(ChatSearchField.CAPTION to item.text)
@@ -143,6 +148,7 @@ object ChatSearch {
             is ChatItem.File -> {
                 if (ChatSearchScope.MESSAGES !in scope) return emptyList()
                 fields.add(ChatSearchField.FILE_NAME to item.file.name)
+                item.file.caption?.let { fields.add(ChatSearchField.BODY to it) }
             }
             is ChatItem.SessionEventItem -> return emptyList()
         }

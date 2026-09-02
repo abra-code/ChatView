@@ -107,6 +107,19 @@ final class ChatFindTests: XCTestCase {
 
     // MARK: - Engine
 
+    func testCaptionsOnPhotosAndFilesAreSearchedAsBodies() {
+        let url = URL(string: "https://example.test/p.jpg")!
+        let captioned: [ChatItem] = [
+            .image(ChatImageItem(id: "p1", role: .remote, image: ChatImage(url: url), caption: "the **fox** at dusk")),
+            .image(ChatImageItem(id: "p2", role: .remote, image: ChatImage(url: url, alt: "a fox"))),   // alt is not searched
+            .file(ChatFile(id: "f1", role: .remote, name: "fox.pdf", caption: "fox notes")),
+        ]
+        let hits = ChatSearch.matches(in: captioned, query: "fox")
+        XCTAssertEqual(hits.map(\.itemID), ["p1", "f1", "f1"])
+        XCTAssertEqual(hits.map(\.field), [.body, .fileName, .body])
+        XCTAssertEqual(hits.first?.range, NSRange(location: 4, length: 3), "a caption is searched as the rendered text")
+    }
+
     func testDefaultScopeSearchesMessagesCaptionsAndFileNames() {
         let hits = ChatSearch.matches(in: items, query: "fox")
         XCTAssertEqual(hits.map(\.itemID), ["m1", "m2", "m2", "s1", "f1"])

@@ -42,7 +42,7 @@ struct DualRowActions {
     var canEdit = false
     var canDelete = false
     var canReact = false
-    var reply: (ChatMessage) -> Void = { _ in }
+    var reply: (_ itemID: String) -> Void = { _ in }
     var edit: (ChatMessage) -> Void = { _ in }
     var delete: (ChatMessage) -> Void = { _ in }
     var toggleReaction: (_ itemID: String, _ emoji: String) -> Void = { _, _ in }
@@ -80,10 +80,10 @@ struct DualTranscriptRow: View {
         case .image(let item):
             // An image is a leading/trailing bubble too; reuse the shared image view inside the gutter frame.
             DualImageRow(ctx: ctx, item: item, config: config, maxBubbleWidth: maxBubbleWidth,
-                         showsSenderNames: showsSenderNames, actions: actions)
+                         showsSenderNames: showsSenderNames, actions: actions, highlights: highlights)
         case .file(let file):
             DualFileRow(ctx: ctx, file: file, config: config, maxBubbleWidth: maxBubbleWidth,
-                        showsSenderNames: showsSenderNames, actions: actions, audio: audio,
+                        showsSenderNames: showsSenderNames, actions: actions, highlights: highlights, audio: audio,
                         onCancel: { actions.cancelTransfer(file.id) },
                         onRetry: { onResend(file.id) }, nameFind: fileNameFind)
         case .memberEvent(let event):
@@ -339,7 +339,7 @@ private struct DualMessageRow: View {
             QuickReactionMenu(itemID: message.id, toggle: actions.toggleReaction)
         }
         if actions.canReply {
-            Button { actions.reply(message) } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
+            Button { actions.reply(message.id) } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
         }
         if actions.canEdit, isSelf {
             Button { actions.edit(message) } label: { Label("Edit", systemImage: "pencil") }
@@ -426,8 +426,8 @@ private struct DualMessageRow: View {
 // MARK: - Image row (dual)
 
 /// A photo (or an agent's image) aligned like a message bubble: the sender label (first of an incoming run),
-/// the picture, and the same reaction badge and React entry a message bubble has, gated the same way. No
-/// caption row yet, like the file row.
+/// the picture - with the caption sent with it under it, in one bubble - and the same reaction badge, React
+/// and Reply entries a message bubble has, gated the same way. No time / delivery row yet, like the file row.
 private struct DualImageRow: View {
     let ctx: DualRowContext
     let item: ChatImageItem
@@ -435,9 +435,11 @@ private struct DualImageRow: View {
     let maxBubbleWidth: CGFloat
     let showsSenderNames: Bool
     let actions: DualRowActions
+    var highlights: RichTextHighlights? = nil   // find hits in the caption
 
     private var isSelf: Bool { ctx.isSelf }
     private var image: ChatImage { item.image }
+    private var caption: String? { (item.caption ?? "").isEmpty ? nil : item.caption }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 6) {
@@ -464,24 +466,46 @@ private struct DualImageRow: View {
         .frame(maxWidth: .infinity, alignment: isSelf ? .trailing : .leading)
     }
 
-    // The badge and the menu are applied to the picture's own frame (capped like a bubble), so the badge pins
-    // to the picture's corner. The menu is attached only when reactions are on, as on the file row.
+    // The badge and the menu are applied to the bubble's own frame (capped like a message bubble), so the badge
+    // pins to its corner. The menu is attached only when it would have an entry, as on the file row.
     @ViewBuilder
     private var reactablePicture: some View {
-        let badged = picture.reactionBadge(actions.canReact ? item.reactions : nil, isSelf: isSelf) { emoji in
-            actions.toggleReaction(item.id, emoji)
-        }
-        if actions.canReact {
-            badged.contextMenu { QuickReactionMenu(itemID: item.id, toggle: actions.toggleReaction) }
+        let badged = bubble
+            .reactionBadge(actions.canReact ? item.reactions : nil, isSelf: isSelf) { emoji in
+                actions.toggleReaction(item.id, emoji)
+            }
+            .frame(maxWidth: min(maxBubbleWidth, 280), alignment: isSelf ? .trailing : .leading)
+        if actions.canReact || actions.canReply {
+            badged.contextMenu { ItemMenu(itemID: item.id, actions: actions) }
         } else {
             badged
         }
     }
 
+    // A bare picture stays a bare picture. With a caption it becomes a bubble like a message's: the picture
+    // edge to edge at the top, clipped to the bubble's outline, the caption under it, one tinted background
+    // behind both. The width cap is applied by the caller AFTER the reaction badge, so the badge pins to the
+    // bubble's real corner (the rule the message row documents).
+    @ViewBuilder
+    private var bubble: some View {
+        if let caption {
+            VStack(alignment: .leading, spacing: 0) {
+                picture
+                RichText(markdown: caption).findHighlights(highlights).widthBehavior(.hug)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+            }
+            .background(ChatBubbleColor.background(isSelf: isSelf, config: config), in: RoundedRectangle(cornerRadius: 14))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+        } else {
+            picture
+        }
+    }
+
+    // The alt text stays the picture's own label: the caption is its own accessible element right under it.
     private var picture: some View {
         CachedImage(url: image.url, intrinsicSize: image.pixelSize, cornerRadius: 12,
                     maxPixelWidth: maxBubbleWidth * 3)
-            .frame(maxWidth: min(maxBubbleWidth, 280), alignment: isSelf ? .trailing : .leading)
             .accessibilityLabel(image.alt.isEmpty ? Text("Image") : Text(image.alt))
     }
 }
@@ -552,12 +576,14 @@ private struct DualFileRow: View {
     let maxBubbleWidth: CGFloat
     let showsSenderNames: Bool
     let actions: DualRowActions
+    var highlights: RichTextHighlights? = nil   // find hits in the caption
     @ObservedObject var audio: ChatAudioController
     let onCancel: () -> Void
     let onRetry: () -> Void
     var nameFind: (ranges: [NSRange], current: Int?)? = nil   // find hits in the file name
 
     private var isSelf: Bool { ctx.isSelf }
+    private var caption: String? { (file.caption ?? "").isEmpty ? nil : file.caption }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 6) {
@@ -584,37 +610,39 @@ private struct DualFileRow: View {
         .frame(maxWidth: .infinity, alignment: isSelf ? .trailing : .leading)
     }
 
-    // A file or voice bubble takes reactions like a message bubble: the same badge on its corner and the same
-    // React entry in its context menu. It has no other menu entries yet (reply has no excerpt for a file, and
-    // deletion is message-only in the store), so the menu is attached only when reactions are on - an empty
-    // context menu would still pop on iOS.
+    // A file or voice bubble takes reactions and replies like a message bubble: the same badge on its corner
+    // and the same React / Reply entries in its context menu (no Edit / Delete: deletion is message-only in the
+    // store). The menu is attached only when it would have an entry - an empty context menu would still pop
+    // on iOS.
     @ViewBuilder
     private var reactableBubble: some View {
         let badged = bubble.reactionBadge(actions.canReact ? file.reactions : nil, isSelf: isSelf) { emoji in
             actions.toggleReaction(file.id, emoji)
         }
-        if actions.canReact {
-            badged.contextMenu { QuickReactionMenu(itemID: file.id, toggle: actions.toggleReaction) }
+        if actions.canReact || actions.canReply {
+            badged.contextMenu { ItemMenu(itemID: file.id, actions: actions) }
         } else {
             badged
         }
     }
 
+    // The file card or the voice player, and under it the caption sent with the file, in one bubble.
     @ViewBuilder
     private var bubble: some View {
-        Group {
+        VStack(alignment: .leading, spacing: 6) {
             if file.kind == .voice {
                 voiceContent
             } else {
                 fileContent
             }
+            if let caption {
+                RichText(markdown: caption).findHighlights(highlights).widthBehavior(.hug)
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .frame(minWidth: 180, alignment: .leading)
-        .background(isSelf ? ChatTint.color(for: config.style(for: .local).tint).opacity(0.22)
-                           : Color.secondary.opacity(0.14),
-                    in: RoundedRectangle(cornerRadius: 14))
+        .background(ChatBubbleColor.background(isSelf: isSelf, config: config), in: RoundedRectangle(cornerRadius: 14))
     }
 
     private var isPlaying: Bool { audio.playingID == file.id }
@@ -833,6 +861,32 @@ private struct QuickReactionMenu: View {
         ForEach(DualRowActions.quickReactions, id: \.self) { emoji in
             Button(emoji) { toggle(itemID, emoji) }
         }
+    }
+}
+
+/// The context menu of a photo or a file bubble: React (when reactions are on) and Reply (when replies are).
+private struct ItemMenu: View {
+    let itemID: String
+    let actions: DualRowActions
+
+    var body: some View {
+        if actions.canReact {
+            QuickReactionMenu(itemID: itemID, toggle: actions.toggleReaction)
+        }
+        if actions.canReply {
+            Button { actions.reply(itemID) } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
+        }
+    }
+}
+
+/// The tinted background a file or photo bubble gets: the local style's tint for an own bubble, gray otherwise.
+/// A message bubble tints by its own role's style instead (`DualMessageRow.bubbleBackground`).
+enum ChatBubbleColor {
+    static func background(isSelf: Bool, config: ChatConfiguration) -> Color {
+        if isSelf {
+            return ChatTint.color(for: config.style(for: .local).tint).opacity(0.22)
+        }
+        return Color.secondary.opacity(0.14)
     }
 }
 

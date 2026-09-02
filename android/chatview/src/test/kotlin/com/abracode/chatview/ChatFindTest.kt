@@ -41,6 +41,18 @@ class ChatFindTest {
 
     // --- Engine. ---
 
+    @Test fun captionsOnPhotosAndFilesAreSearchedAsBodies() {
+        val captioned = listOf(
+            ChatItem.Image(ChatImageItem(id = "p1", role = ChatRole.REMOTE, image = ChatImage(url = "https://example.test/p.jpg"), caption = "the **fox** at dusk")),
+            ChatItem.Image(ChatImageItem(id = "p2", role = ChatRole.REMOTE, image = ChatImage(url = "https://example.test/p.jpg", alt = "a fox"))), // alt is not searched
+            ChatItem.File(ChatFile(id = "f1", role = ChatRole.REMOTE, name = "fox.pdf", caption = "fox notes")),
+        )
+        val hits = ChatSearch.matches(captioned, "fox")
+        assertEquals(listOf("p1", "f1", "f1"), hits.map { it.itemID })
+        assertEquals(listOf(ChatSearchField.BODY, ChatSearchField.FILE_NAME, ChatSearchField.BODY), hits.map { it.field })
+        assertEquals("a caption is searched as the rendered text", RichTextRange(4, 7), hits.first().range)
+    }
+
     @Test fun defaultScopeSearchesMessagesCaptionsAndFileNames() {
         val hits = ChatSearch.matches(items, "fox")
         assertEquals(listOf("m1", "m2", "m2", "s1", "f1"), hits.map { it.itemID })

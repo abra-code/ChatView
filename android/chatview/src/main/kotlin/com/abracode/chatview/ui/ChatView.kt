@@ -57,6 +57,7 @@ import com.abracode.chatview.ChatConfiguration
 import com.abracode.chatview.ChatContentSource
 import com.abracode.chatview.ChatHostEventSink
 import com.abracode.chatview.ChatItem
+import com.abracode.chatview.ChatItemExcerpt
 import com.abracode.chatview.ChatLogger
 import com.abracode.chatview.ChatStore
 import com.abracode.chatview.ChatTranscriptLayout
@@ -257,11 +258,26 @@ fun ChatView(
         val oneLine = text.replace("\n", " ").trim()
         return if (oneLine.length > 120) oneLine.take(120) + ELLIPSIS else oneLine
     }
+    // A reply to a message, a photo or a file: the banner quotes the body, the caption, or the item's name in that
+    // order (ChatItemExcerpt), attributed to the resolved sender.
     fun beginReply(id: String) {
-        val message = (store.items.firstOrNull { it.id == id } as? ChatItem.Message)?.message ?: return
+        val target = when (val item = store.items.firstOrNull { it.id == id }) {
+            is ChatItem.Message -> ReplyTarget(
+                id = id, excerpt = replyExcerpt(item.message.text),
+                sender = resolveName(item.message.senderName, item.message.senderID, item.message.role, store.participants, configuration),
+            )
+            is ChatItem.File -> ReplyTarget(
+                id = id, excerpt = ChatItemExcerpt.file(item.file, ::replyExcerpt),
+                sender = resolveName(item.file.senderName, item.file.senderID, item.file.role, store.participants, configuration),
+            )
+            is ChatItem.Image -> ReplyTarget(
+                id = id, excerpt = ChatItemExcerpt.image(item.item, ::replyExcerpt),
+                sender = resolveName(item.item.senderName, item.item.senderID, item.item.role, store.participants, configuration),
+            )
+            else -> return
+        }
         editTargetID = null
-        val sender = resolveName(message.senderName, message.senderID, message.role, store.participants, configuration)
-        replyTarget = ReplyTarget(id = id, excerpt = replyExcerpt(message.text), sender = sender)
+        replyTarget = target
     }
     fun beginEdit(id: String) {
         val message = (store.items.firstOrNull { it.id == id } as? ChatItem.Message)?.message ?: return

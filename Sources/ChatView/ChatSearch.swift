@@ -137,8 +137,12 @@ public enum ChatSearch {
             // The card renders the detail through the same cap the search must honor: text past the
             // cap is not on screen, so a hit there could not be highlighted.
             fields.append((.body, ToolDetailText.capped(call.contentText)))
-        case .image:
-            return []
+        case .image(let item):
+            // A photo's caption is a body like a message's; a photo without one shows no text.
+            guard scope.contains(.messages), let caption = item.caption else {
+                return []
+            }
+            fields.append((.body, caption))
         case .system(_, let text), .error(_, let text):
             guard scope.contains(.messages) else {
                 return []
@@ -167,6 +171,9 @@ public enum ChatSearch {
                 return []
             }
             fields.append((.fileName, file.name))
+            if let caption = file.caption {
+                fields.append((.body, caption))
+            }
         }
         return fields.filter { !$0.1.isEmpty }
     }
@@ -176,7 +183,7 @@ public extension ChatItem {
     /// Everything this item displays, as plain text, for a host building its own index: Markdown bodies
     /// linearized the way a reader sees them (RichTextPlainText - alt text for images, table rows as
     /// comma-separated cells, no syntax), other fields verbatim, one field per line. nil when the item
-    /// shows nothing `scope` covers (an image, a deleted message, a call caption).
+    /// shows nothing `scope` covers (a photo without a caption, a deleted message, an out-of-scope thought).
     func searchableText(scope: ChatSearchScope = .default) -> String? {
         let lines = ChatSearch.searchableFields(of: self, scope: scope).map { field, text -> String in
             field == .body ? RichTextPlainText.text(for: RichTextDocument(markdown: text)) : text

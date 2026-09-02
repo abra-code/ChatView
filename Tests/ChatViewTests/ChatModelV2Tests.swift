@@ -129,9 +129,12 @@ final class ChatModelV2RoundTripTests: XCTestCase {
         let photo = ChatItem.image(ChatImageItem(
             id: "p1", role: .remote, senderID: "alex", senderName: "Alex", timestamp: "2026-07-10T12:00:00Z",
             status: .read, image: ChatImage(url: URL(string: "https://example.test/p.jpg")!, alt: "pic"),
-            reactions: [Reaction(emoji: "\u{1F44D}", count: 1, mine: true)]))
+            caption: "Look at *this*", reactions: [Reaction(emoji: "\u{1F44D}", count: 1, mine: true)]))
         let decoded = try JSONDecoder().decode(ChatItem.self, from: JSONEncoder().encode(photo))
         XCTAssertEqual(decoded, photo)
+        if case .image(let item) = decoded {
+            XCTAssertEqual(item.caption, "Look at *this*")
+        }
         // An agent's image (no sender, time, status or reactions) keeps the shape it always had: type, id,
         // role and image, nothing else - so older readers and goldens see no change.
         let bare = ChatItem.image(ChatImageItem(id: "i1", role: .agent, image: ChatImage(url: URL(string: "https://example.test/i.png")!)))
@@ -144,12 +147,14 @@ final class ChatModelV2RoundTripTests: XCTestCase {
 
     func testFileReactionsRoundTripAndDefaultToNil() throws {
         let reacted = ChatFile(id: "f1", role: .remote, name: "a.pdf", transferStatus: .completed,
-                               reactions: [Reaction(emoji: "\u{1F44D}", count: 2, mine: true)])
+                               caption: "the draft", reactions: [Reaction(emoji: "\u{1F44D}", count: 2, mine: true)])
         let decoded = try JSONDecoder().decode(ChatFile.self, from: JSONEncoder().encode(reacted))
         XCTAssertEqual(decoded, reacted)
         XCTAssertEqual(decoded.reactions?.first?.count, 2)
+        XCTAssertEqual(decoded.caption, "the draft")
         let bare = try JSONDecoder().decode(ChatFile.self, from: Data(#"{"id":"f2","role":"remote","name":"x.txt"}"#.utf8))
         XCTAssertNil(bare.reactions)
+        XCTAssertNil(bare.caption)
     }
 
     /// `ChatFile.kind` and `.transferStatus` default when absent (kind -> file, transferStatus ->

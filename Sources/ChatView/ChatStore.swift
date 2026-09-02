@@ -2187,7 +2187,11 @@ final class ChatStore: ObservableObject {
         case .message(let message):
             return ReplyRef(itemID: itemID, excerpt: replyExcerpt(message.text), senderName: resolvedSenderName(message))
         case .file(let file):
-            return ReplyRef(itemID: itemID, excerpt: file.name, senderName: file.senderName)
+            return ReplyRef(itemID: itemID, excerpt: ChatItemExcerpt.file(file, excerpt: replyExcerpt),
+                            senderName: resolvedSenderName(senderName: file.senderName, senderID: file.senderID))
+        case .image(let item):
+            return ReplyRef(itemID: itemID, excerpt: ChatItemExcerpt.image(item, excerpt: replyExcerpt),
+                            senderName: resolvedSenderName(senderName: item.senderName, senderID: item.senderID))
         default:
             return nil
         }
@@ -2199,10 +2203,15 @@ final class ChatStore: ObservableObject {
     }
 
     private func resolvedSenderName(_ message: ChatMessage) -> String? {
-        if let name = message.senderName {
-            return name
+        resolvedSenderName(senderName: message.senderName, senderID: message.senderID)
+    }
+
+    /// The item's own sender name when it carries one, else the roster's name for its sender id.
+    private func resolvedSenderName(senderName: String?, senderID: String?) -> String? {
+        if let senderName {
+            return senderName
         }
-        if let senderID = message.senderID {
+        if let senderID {
             return participants.first(where: { $0.id == senderID })?.name
         }
         return nil

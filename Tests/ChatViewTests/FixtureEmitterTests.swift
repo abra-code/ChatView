@@ -448,10 +448,12 @@ private func allScenarios() -> [Scenario] {
             .imageAdded(ChatImageItem(id: "p1", role: .remote, senderID: "alex", senderName: "Alex",
                                       timestamp: "2026-07-10T15:00:00Z", status: .read,
                                       image: ChatImage(url: URL(string: "https://example.test/lunch.jpg")!, alt: "The lunch spot"),
+                                      caption: "Found it!",
                                       reactions: [Reaction(emoji: thumbsUp(), count: 1, mine: false)])),
             .imageAdded(ChatImageItem(id: "p1", role: .remote, senderID: "alex", senderName: "Alex",
                                       timestamp: "2026-07-10T15:00:00Z", status: .read,
                                       image: ChatImage(url: URL(string: "https://example.test/lunch.jpg")!, alt: "The lunch spot, retitled"),
+                                      caption: "Found it!",
                                       reactions: [Reaction(emoji: thumbsUp(), count: 1, mine: false)])),   // same id -> replace
             .reactionsChanged(itemID: "p1", reactions: [Reaction(emoji: heart(), count: 2, mine: true)]),   // on an image
         ]),

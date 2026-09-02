@@ -123,8 +123,8 @@ internal fun DualTranscriptRow(ctx: DualRowContext, actions: DualRowActions, hig
         }
         when (val item = ctx.item) {
             is ChatItem.Message -> DualMessageRow(ctx, actions, item.message, highlighted, find)
-            is ChatItem.Image -> DualImageRow(ctx, actions, item)
-            is ChatItem.File -> DualFileRow(ctx, actions, item.file, find.fileName)
+            is ChatItem.Image -> DualImageRow(ctx, actions, item, find)
+            is ChatItem.File -> DualFileRow(ctx, actions, item.file, find)
             is ChatItem.MemberEventItem ->
                 CenteredCaption(memberEventText(item.event), Icons.Filled.Group, MaterialTheme.colorScheme.onSurfaceVariant, find.caption)
             is ChatItem.CallEventItem -> {
@@ -515,11 +515,14 @@ private fun ReplyQuote(ref: ReplyRef, onClick: () -> Unit) {
 // --- Image. ---------------------------------------------------------------------------------------------------
 
 @Composable
-private fun DualImageRow(ctx: DualRowContext, actions: DualRowActions, item: ChatItem.Image) {
-    // A photo takes reactions like a message bubble: the same badge on its corner and the same quick-reaction
-    // row on long press, attached only when reactions are on (as on the file row). No caption row yet, like the
-    // file row.
+private fun DualImageRow(ctx: DualRowContext, actions: DualRowActions, item: ChatItem.Image, find: RowFind = RowFind.None) {
+    // A photo takes reactions and replies like a message bubble: the same badge on its corner and the same
+    // quick-reaction row / Reply entry on long press, attached only when they would have an entry (as on the file
+    // row). A bare picture stays a bare picture; with a caption it becomes a bubble like a message's: the picture
+    // edge to edge at the top, the caption under it, one tinted background behind both. No time / delivery row
+    // yet, like the file row.
     val photo = item.item
+    val caption = photo.caption?.takeIf { it.isNotEmpty() }
     DualRowScaffold(
         ctx = ctx,
         actions = actions,
@@ -531,13 +534,15 @@ private fun DualImageRow(ctx: DualRowContext, actions: DualRowActions, item: Cha
     ) {
         val frameMax = minOf(actions.maxBubbleWidth, 280.dp)
         val intrinsic = photo.image.pixelSize?.let { Size(it.width.toFloat(), it.height.toFloat()) }
+        val hasMenu = actions.canReact || actions.canReply
         var menuOpen by remember { mutableStateOf(false) }
-        Box(
+        Column(
             modifier = Modifier
                 .widthIn(max = frameMax)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(if (caption != null) BubbleShape else RoundedCornerShape(12.dp))
+                .then(if (caption != null) Modifier.background(dualBubbleColor(ctx.isSelf, actions.config)) else Modifier)
                 .then(
-                    if (actions.canReact) {
+                    if (hasMenu) {
                         Modifier.combinedClickable(onClick = {}, onLongClick = { menuOpen = true })
                     } else {
                         Modifier
@@ -551,12 +556,20 @@ private fun DualImageRow(ctx: DualRowContext, actions: DualRowActions, item: Cha
                 cornerRadius = 12.dp,
                 contentMode = ContentMode.Fill,
                 maxPixelWidth = actions.maxBubbleWidth.value * 3f,
+                // The alt text stays the picture's own label: the caption is its own accessible element under it.
                 contentDescription = photo.image.alt.ifEmpty { "Image" },
             )
-            if (actions.canReact) {
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    QuickReactionRow(photo.id, actions, onDismiss = { menuOpen = false })
+            if (caption != null) {
+                Box(modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)) {
+                    RichText(
+                        markdown = caption,
+                        highlights = find.body,
+                        onCurrentMatchBounds = if (find.isCurrent) actions.onCurrentMatchBounds else null,
+                    )
                 }
+            }
+            if (hasMenu) {
+                ItemContextMenu(menuOpen, onDismiss = { menuOpen = false }, photo.id, actions)
             }
         }
     }
@@ -565,12 +578,14 @@ private fun DualImageRow(ctx: DualRowContext, actions: DualRowActions, item: Cha
 // --- File + voice. --------------------------------------------------------------------------------------------
 
 @Composable
-private fun DualFileRow(ctx: DualRowContext, actions: DualRowActions, file: ChatFile, nameFind: PlainFind? = null) {
-    // Swift's DualFileRow carries no timestamp / delivery caption (ChatDualTranscript.swift:442-447) - only the
-    // sender label + bubble - so the scaffold gets no caption slot here. A file or voice bubble takes reactions
-    // like a message bubble: the same badge on its corner and the same quick-reaction row on long press. It has
-    // no other menu entries yet (reply has no excerpt for a file, and deletion is message-only in the store), so
-    // the long press is attached only when reactions are on.
+private fun DualFileRow(ctx: DualRowContext, actions: DualRowActions, file: ChatFile, find: RowFind = RowFind.None) {
+    // Swift's DualFileRow carries no timestamp / delivery caption - only the sender label + bubble - so the
+    // scaffold gets no caption slot here. A file or voice bubble takes reactions and replies like a message bubble:
+    // the same badge on its corner and the same quick-reaction row / Reply entry on long press (no Edit / Delete:
+    // deletion is message-only in the store), attached only when they would have an entry. The caption sent with
+    // the file sits under the card in the same bubble.
+    val caption = file.caption?.takeIf { it.isNotEmpty() }
+    val hasMenu = actions.canReact || actions.canReply
     DualRowScaffold(
         ctx = ctx,
         actions = actions,
@@ -580,37 +595,63 @@ private fun DualFileRow(ctx: DualRowContext, actions: DualRowActions, file: Chat
             null
         },
     ) {
-        val bg = if (ctx.isSelf) {
-            ChatTint.color(actions.config.style(ChatRole.LOCAL).tint).copy(alpha = 0.22f)
-        } else {
-            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.14f)
-        }
         var menuOpen by remember { mutableStateOf(false) }
         Column(
             modifier = Modifier
                 .widthIn(min = 180.dp)
                 .clip(BubbleShape)
-                .background(bg)
+                .background(dualBubbleColor(ctx.isSelf, actions.config))
                 .then(
-                    if (actions.canReact) {
+                    if (hasMenu) {
                         Modifier.combinedClickable(onClick = {}, onLongClick = { menuOpen = true })
                     } else {
                         Modifier
                     },
                 )
                 .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             if (file.kind == ChatFile.Kind.VOICE) {
                 VoiceContent(file)
             } else {
-                FileContent(file, actions, nameFind)
+                FileContent(file, actions, find.fileName)
             }
-            if (actions.canReact) {
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    QuickReactionRow(file.id, actions, onDismiss = { menuOpen = false })
-                }
+            if (caption != null) {
+                RichText(
+                    markdown = caption,
+                    highlights = find.body,
+                    onCurrentMatchBounds = if (find.isCurrent) actions.onCurrentMatchBounds else null,
+                )
             }
+            if (hasMenu) {
+                ItemContextMenu(menuOpen, onDismiss = { menuOpen = false }, file.id, actions)
+            }
+        }
+    }
+}
+
+/** The tinted background every dual bubble shares: the local style's tint for an own bubble, gray otherwise. */
+@Composable
+private fun dualBubbleColor(isSelf: Boolean, config: ChatConfiguration): Color =
+    if (isSelf) {
+        ChatTint.color(config.style(ChatRole.LOCAL).tint).copy(alpha = 0.22f)
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.14f)
+    }
+
+/** The long-press menu of a photo or a file bubble: the quick reactions (when reactions are on) and Reply (when replies are). */
+@Composable
+private fun ItemContextMenu(expanded: Boolean, onDismiss: () -> Unit, itemID: String, actions: DualRowActions) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        if (actions.canReact) {
+            QuickReactionRow(itemID, actions, onDismiss)
+        }
+        if (actions.canReply) {
+            DropdownMenuItem(
+                text = { Text("Reply") },
+                leadingIcon = { Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = null) },
+                onClick = { actions.reply(itemID); onDismiss() },
+            )
         }
     }
 }

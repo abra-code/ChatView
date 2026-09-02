@@ -1573,7 +1573,14 @@ internal class ChatStore(
         return when (val existing = item(itemID)) {
             is ChatItem.Message -> ReplyRef(itemID = itemID, excerpt = replyExcerpt(existing.message.text),
                 senderName = resolvedSenderName(existing.message))
-            is ChatItem.File -> ReplyRef(itemID = itemID, excerpt = existing.file.name, senderName = existing.file.senderName)
+            is ChatItem.File -> ReplyRef(
+                itemID = itemID, excerpt = ChatItemExcerpt.file(existing.file, ::replyExcerpt),
+                senderName = resolvedSenderName(existing.file.senderName, existing.file.senderID),
+            )
+            is ChatItem.Image -> ReplyRef(
+                itemID = itemID, excerpt = ChatItemExcerpt.image(existing.item, ::replyExcerpt),
+                senderName = resolvedSenderName(existing.item.senderName, existing.item.senderID),
+            )
             else -> null
         }
     }
@@ -1583,10 +1590,13 @@ internal class ChatStore(
         return if (oneLine.length > 200) oneLine.take(200) else oneLine
     }
 
-    private fun resolvedSenderName(message: ChatMessage): String? {
-        message.senderName?.let { return it }
-        val senderID = message.senderID ?: return null
-        return participants.firstOrNull { it.id == senderID }?.name
+    private fun resolvedSenderName(message: ChatMessage): String? = resolvedSenderName(message.senderName, message.senderID)
+
+    /** The item's own sender name when it carries one, else the roster's name for its sender id. */
+    private fun resolvedSenderName(senderName: String?, senderID: String?): String? {
+        senderName?.let { return it }
+        val id = senderID ?: return null
+        return participants.firstOrNull { it.id == id }?.name
     }
 
     private fun itemElement(item: ChatItem): JsonElement = chatJson.encodeToJsonElement(ChatItemSerializer, item)

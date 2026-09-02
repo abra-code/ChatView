@@ -521,6 +521,28 @@ final class ChatStoreV2BehaviorTests: XCTestCase {
         XCTAssertFalse(add, "an existing own reaction on a file -> remove")
     }
 
+    func testReplyToAPhotoQuotesItsCaption() async {
+        let (store, sink) = makeStarted(features: ["features": ["replies": true]], capabilities: allCaps())
+        let url = URL(string: "https://example.test/p.jpg")!
+        store.route(.participantsChanged([Participant(id: "alex", name: "Alex")]))
+        store.route(.imageAdded(ChatImageItem(id: "p1", role: .remote, senderID: "alex", image: ChatImage(url: url),
+                                              caption: "Look at\nthis")))
+        store.route(.imageAdded(ChatImageItem(id: "p2", role: .remote, senderName: "Sam", image: ChatImage(url: url, alt: "a fox"))))
+        store.route(.fileAdded(ChatFile(id: "f1", role: .remote, senderID: "alex", name: "a.pdf", caption: "the draft")))
+        for (target, excerpt, sender) in [("p1", "Look at this", "Alex"), ("p2", "a fox", "Sam"), ("f1", "the draft", "Alex")] {
+            store.draft = "nice"
+            store.submitDraft(replyTo: target)
+            await settle()
+            let sent = store.items.compactMap { item -> ChatMessage? in
+                if case .message(let message) = item, message.replyTo?.itemID == target { return message }
+                return nil
+            }
+            XCTAssertEqual(sent.first?.replyTo?.excerpt, excerpt, "reply to \(target)")
+            XCTAssertEqual(sent.first?.replyTo?.senderName, sender, "the quote names the sender, from the roster when the item carries only an id")
+        }
+        XCTAssertEqual(sink.all().count, 3)
+    }
+
     func testToggleReactionOnAnImageDerivesAddFromItsOwnReactions() async {
         let (store, sink) = makeStarted(features: ["features": ["reactions": true]], capabilities: allCaps())
         store.route(.imageAdded(ChatImageItem(id: "p1", role: .remote, image: ChatImage(url: URL(string: "https://example.test/p.jpg")!),

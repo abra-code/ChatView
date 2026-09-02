@@ -165,10 +165,12 @@ class ChatModelV2Test {
             ChatImageItem(
                 id = "p1", role = ChatRole.REMOTE, senderID = "alex", senderName = "Alex", timestamp = "2026-07-10T12:00:00Z",
                 status = MessageStatus.READ, image = ChatImage(url = "https://example.test/p.jpg", alt = "pic"),
-                reactions = listOf(Reaction(emoji = thumbsUp, count = 1, mine = true)),
+                caption = "Look at *this*", reactions = listOf(Reaction(emoji = thumbsUp, count = 1, mine = true)),
             ),
         )
-        assertEquals(photo, roundTrip(ChatItem.serializer(), photo))
+        val decodedPhoto = roundTrip(ChatItem.serializer(), photo)
+        assertEquals(photo, decodedPhoto)
+        assertEquals("Look at *this*", (decodedPhoto as ChatItem.Image).item.caption)
         // An agent's image keeps the shape it always had: type, id, role and image, nothing else.
         val bare: ChatItem = ChatItem.Image(ChatImageItem(id = "i1", role = ChatRole.AGENT, image = ChatImage(url = "https://example.test/i.png")))
         val keys = chatJson.encodeToJsonElement(ChatItem.serializer(), bare).jsonObject.keys
@@ -181,13 +183,15 @@ class ChatModelV2Test {
     fun fileReactionsRoundTripAndDefaultToNull() {
         val reacted = ChatFile(
             id = "f1", role = ChatRole.REMOTE, name = "a.pdf", transferStatus = FileTransferStatus.COMPLETED,
-            reactions = listOf(Reaction(emoji = thumbsUp, count = 2, mine = true)),
+            caption = "the draft", reactions = listOf(Reaction(emoji = thumbsUp, count = 2, mine = true)),
         )
         val decoded = roundTrip(ChatFile.serializer(), reacted)
         assertEquals(reacted, decoded)
         assertEquals(2, decoded.reactions?.firstOrNull()?.count)
+        assertEquals("the draft", decoded.caption)
         val bare = (decodeItem("""{"type":"file","file":{"id":"f2","role":"remote","name":"x.txt"}}""") as ChatItem.File).file
         assertNull(bare.reactions)
+        assertNull(bare.caption)
     }
 
     @Test

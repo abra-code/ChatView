@@ -397,6 +397,8 @@ data class ChatFile(
     val durationSeconds: Int? = null,
     @EncodeDefault(EncodeDefault.Mode.ALWAYS) val transferStatus: FileTransferStatus = FileTransferStatus.COMPLETED,
     val progress: Double? = null,
+    /** The text sent with the file (Markdown, like a message body), drawn under the file card in the same bubble. */
+    val caption: String? = null,
     /** The aggregated emoji reaction set, replaced whole by ReactionsChanged, exactly as on a message. */
     val reactions: List<Reaction>? = null,
 ) {
@@ -424,8 +426,27 @@ data class ChatImageItem(
     val timestamp: String? = null,
     val status: MessageStatus? = null,
     val image: ChatImage,
+    /** The text sent with the photo (Markdown, like a message body), drawn under the picture in the same bubble. */
+    val caption: String? = null,
     val reactions: List<Reaction>? = null,
 )
+
+/**
+ * What a reply quote or a banner says about a photo or a file: the caption when there is one, else the file name,
+ * else the photo's alt text, else "Photo" - each run through the caller's excerpt rule, the same one a message body
+ * gets. One place, so the store's reply reference and the composer's banner cannot disagree.
+ */
+internal object ChatItemExcerpt {
+    fun file(file: ChatFile, excerpt: (String) -> String): String {
+        val caption = file.caption
+        return if (!caption.isNullOrEmpty()) excerpt(caption) else excerpt(file.name)
+    }
+
+    fun image(item: ChatImageItem, excerpt: (String) -> String): String {
+        val caption = item.caption
+        return if (!caption.isNullOrEmpty()) excerpt(caption) else if (item.image.alt.isEmpty()) "Photo" else excerpt(item.image.alt)
+    }
+}
 
 /** A conversation participant (the group roster). `isSelf` marks the local user (used to derive dual alignment). */
 @Serializable

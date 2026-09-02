@@ -36,8 +36,10 @@ The nested objects inside events and transcripts use the model's own JSON vocabu
   under a key named for the case (`message`, `toolCall`, `memberEvent`, `callEvent`, `file`,
   `image`, `sessionEvent`) except `system` / `error`, which inline `id` + `text`, and `image`, which
   inlines `id` + `role` beside its `image` object - plus, for a person-to-person photo, the optional
-  `senderID`, `senderName`, `timestamp`, `status` and `reactions` (the same fields a `file` carries),
-  omitted when nil, so an agent's image keeps its original four-key shape.
+  `senderID`, `senderName`, `timestamp`, `status`, `caption` and `reactions` (the same fields a `file`
+  carries), omitted when nil, so an agent's image keeps its original four-key shape.
+- `caption` on a `file` or an `image` item is the text sent with it (Markdown, like a message body),
+  drawn under the card or the picture in the same bubble; omitted when nil.
 - `transientSystem` is an EVENT ONLY. It produces the same `system` ChatItem as `system` does and
   there is no `transientSystem` item type - the difference between the two is whether the host is
   told to persist it, which is why the event tags differ and the item tags do not. Nothing decoding
@@ -126,7 +128,7 @@ branch is exercised end to end.
 | `scenario-16-participants` | `participantsChanged` sets the roster. |
 | `scenario-17-history-page` | `historyPage` prepends older items ahead of the current message. |
 | `scenario-18-connection` | `connectionStateChanged` transitions (transient; bundled with a received message). |
-| `scenario-19-image-added` | `imageAdded` insert with sender / time / reactions, then a same-id `imageAdded` replaces in place, then `reactionsChanged` on the image. |
+| `scenario-19-image-added` | `imageAdded` insert with sender / time / caption / reactions, then a same-id `imageAdded` replaces in place, then `reactionsChanged` on the image. |
 
 ## Event envelope schema (the contract)
 

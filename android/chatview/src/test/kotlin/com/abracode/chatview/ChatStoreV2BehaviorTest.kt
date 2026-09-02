@@ -202,6 +202,28 @@ class ChatStoreV2BehaviorTest {
     }
 
     @Test
+    fun replyToAPhotoQuotesItsCaption() = runTest {
+        val (store, sink) = makeStarted(
+            features = buildJsonObject { putJsonObject("features") { put("replies", true) } },
+            capabilities = allCaps(),
+        )
+        val url = "https://example.test/p.jpg"
+        store.route(ChatEvent.ParticipantsChanged(listOf(Participant(id = "alex", name = "Alex"))))
+        store.route(ChatEvent.ImageAdded(ChatImageItem(id = "p1", role = ChatRole.REMOTE, senderID = "alex", image = ChatImage(url = url), caption = "Look at\nthis")))
+        store.route(ChatEvent.ImageAdded(ChatImageItem(id = "p2", role = ChatRole.REMOTE, senderName = "Sam", image = ChatImage(url = url, alt = "a fox"))))
+        store.route(ChatEvent.FileAdded(ChatFile(id = "f1", role = ChatRole.REMOTE, senderID = "alex", name = "a.pdf", caption = "the draft")))
+        for ((target, expected) in listOf("p1" to ("Look at this" to "Alex"), "p2" to ("a fox" to "Sam"), "f1" to ("the draft" to "Alex"))) {
+            store.draft = "nice"
+            store.submitDraft(replyTo = target)
+            advanceUntilIdle()
+            val sent = store.items.filterIsInstance<ChatItem.Message>().firstOrNull { it.message.replyTo?.itemID == target }
+            assertEquals("reply to $target", expected.first, sent?.message?.replyTo?.excerpt)
+            assertEquals("the quote names the sender, from the roster when the item carries only an id", expected.second, sent?.message?.replyTo?.senderName)
+        }
+        assertEquals(3, sink.all().size)
+    }
+
+    @Test
     fun toggleReactionOnAnImageDerivesAddFromItsOwnReactions() = runTest {
         val (store, sink) = makeStarted(
             features = buildJsonObject { putJsonObject("features") { put("reactions", true) } },
