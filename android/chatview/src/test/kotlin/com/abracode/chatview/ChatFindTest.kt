@@ -101,9 +101,9 @@ class ChatFindTest {
 
     // --- Store. ---
 
-    private fun makeStore(source: FakeContentSource, find: Boolean = true, readOnly: Boolean = true, scheduler: ManualChatScheduler? = null): ChatStore {
+    private fun makeStore(source: FakeContentSource, showFindBar: Boolean = true, readOnly: Boolean = true, scheduler: ManualChatScheduler? = null): ChatStore {
         val store = ChatStore(
-            config = ChatConfiguration(readOnly = readOnly, showFindBar = find),
+            config = ChatConfiguration(readOnly = readOnly, showFindBar = showFindBar),
             logger = noopLogger(),
             contentSource = source,
             scheduler = scheduler ?: ManualChatScheduler(),
@@ -317,7 +317,7 @@ class ChatFindTest {
 
     @Test fun searchChannelHighlightsWithoutPresentingWhenFindIsOff() {
         val source = FakeContentSource(seed = transcriptJson(items))
-        val store = makeStore(source, find = false)
+        val store = makeStore(source, showFindBar = false)
         source.search = "fox"
         assertFalse(store.find.isPresented)
         assertEquals(6, store.find.hits.size)

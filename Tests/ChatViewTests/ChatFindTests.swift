@@ -160,9 +160,9 @@ final class ChatFindTests: XCTestCase {
 
     // MARK: - Store
 
-    private func makeStore(_ source: FakeFindSource, find: Bool = true, readOnly: Bool = true,
+    private func makeStore(_ source: FakeFindSource, showFindBar: Bool = true, readOnly: Bool = true,
                            scheduler: ManualScheduler? = nil) -> ChatStore {
-        let store = ChatStore(config: ChatConfiguration(readOnly: readOnly, showFindBar: find), logger: FindTestLogger(),
+        let store = ChatStore(config: ChatConfiguration(readOnly: readOnly, showFindBar: showFindBar), logger: FindTestLogger(),
                               contentSource: source, scheduler: scheduler)
         store.start()
         return store
@@ -430,7 +430,7 @@ final class ChatFindTests: XCTestCase {
     func testSearchChannelHighlightsWithoutPresentingWhenFindIsOff() {
         let source = FakeFindSource()
         source.content = transcriptJSON(items)
-        let store = makeStore(source, find: false)
+        let store = makeStore(source, showFindBar: false)
         source.search = "fox"
         XCTAssertFalse(store.find.isPresented)
         XCTAssertEqual(store.find.hits.count, 6)
