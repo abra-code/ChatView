@@ -125,6 +125,18 @@ class ChatStoreV2RoutingTest {
     }
 
     @Test
+    fun reactionsOnAFileMutateInPlace() {
+        val store = makeStore()
+        store.route(ChatEvent.FileAdded(ChatFile(id = "f1", role = ChatRole.REMOTE, name = "a.pdf", transferStatus = FileTransferStatus.COMPLETED)))
+        store.route(ChatEvent.ReactionsChanged(itemID = "f1", reactions = listOf(Reaction(emoji = "\uD83D\uDC4D", count = 1, mine = true))))
+        val file = (store.items[0] as ChatItem.File).file
+        assertEquals("\uD83D\uDC4D", file.reactions?.firstOrNull()?.emoji)
+        store.route(ChatEvent.ReactionsChanged(itemID = "f1", reactions = emptyList()))
+        val cleared = (store.items[0] as ChatItem.File).file
+        assertEquals("a file's reaction set is replaced whole, like a message's", emptyList<Reaction>(), cleared.reactions)
+    }
+
+    @Test
     fun fileAddedAndProgressAndUnknownNoOp() {
         val store = makeStore()
         store.route(

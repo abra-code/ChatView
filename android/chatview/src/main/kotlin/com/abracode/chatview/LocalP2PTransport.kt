@@ -220,6 +220,7 @@ class LocalP2PTransport(
                     timestamp = stamp(daysAgo = 0, minute = 6), name = "voice-message.m4a",
                     sizeBytes = 51_200, url = "https://example.test/voice.m4a",
                     kind = ChatFile.Kind.VOICE, durationSeconds = 14, transferStatus = FileTransferStatus.COMPLETED,
+                    reactions = listOf(Reaction(emoji = "\u2764\uFE0F", count = 1, mine = false)),
                 ),
             ),
         )

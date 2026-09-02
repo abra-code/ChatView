@@ -191,7 +191,8 @@ final class LocalP2PTransport: ChatTransport, @unchecked Sendable {
         events.append(.fileAdded(ChatFile(id: "voice-1", role: .remote, senderID: peerID, senderName: peerName,
                                           timestamp: Self.stamp(daysAgo: 0, minute: 6), name: "voice-message.m4a",
                                           sizeBytes: 51_200, url: URL(string: "https://example.test/voice.m4a"),
-                                          kind: .voice, durationSeconds: 14, transferStatus: .completed)))
+                                          kind: .voice, durationSeconds: 14, transferStatus: .completed,
+                                          reactions: [Reaction(emoji: "\u{2764}\u{FE0F}", count: 1, mine: false)])))
         return events
     }
 

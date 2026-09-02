@@ -161,8 +161,8 @@ internal fun DualTranscriptRow(ctx: DualRowContext, actions: DualRowActions, hig
 /**
  * How far the reaction badge hangs above the bubble's top edge and outside its outer edge, and the room the row
  * reserves above a reacted bubble (the rise plus clearance from the bubble before it). Same values as the Swift
- * row (DualMessageRow.reactionRise / reactionOutset / reactionInset). The rise puts the badge's bottom edge near
- * the bubble's text inset, so it covers the corner and stays off the first line.
+ * ReactionBadge (rise / outset / inset). The rise puts the badge's bottom edge near the bubble's text inset, so it
+ * covers the corner and stays off the first line.
  */
 private val REACTION_RISE = 18.dp
 private val REACTION_OUTSET = 10.dp
@@ -393,18 +393,7 @@ private fun MessageContextMenu(
     val clipboard = LocalClipboardManager.current
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
         if (actions.canReact) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                quickReactions.forEach { emoji ->
-                    Text(
-                        emoji,
-                        fontSize = 20.sp,
-                        modifier = Modifier.clickable { actions.toggleReaction(msg.id, emoji); onDismiss() },
-                    )
-                }
-            }
+            QuickReactionRow(msg.id, actions, onDismiss)
         }
         if (actions.canReply) {
             DropdownMenuItem(
@@ -436,6 +425,23 @@ private fun MessageContextMenu(
 }
 
 // --- Reactions + reply quote. ---------------------------------------------------------------------------------
+
+/** The quick-reaction row at the top of a bubble's long-press menu (the Android twin of Swift's QuickReactionMenu). */
+@Composable
+private fun QuickReactionRow(itemID: String, actions: DualRowActions, onDismiss: () -> Unit) {
+    Row(
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        quickReactions.forEach { emoji ->
+            Text(
+                emoji,
+                fontSize = 20.sp,
+                modifier = Modifier.clickable { actions.toggleReaction(itemID, emoji); onDismiss() },
+            )
+        }
+    }
+}
 
 @Composable
 private fun ReactionChips(reactions: List<Reaction>, id: String, actions: DualRowActions) {
@@ -530,21 +536,37 @@ private fun DualImageRow(ctx: DualRowContext, actions: DualRowActions, item: Cha
 @Composable
 private fun DualFileRow(ctx: DualRowContext, actions: DualRowActions, file: ChatFile, nameFind: PlainFind? = null) {
     // Swift's DualFileRow carries no timestamp / delivery caption (ChatDualTranscript.swift:442-447) - only the
-    // sender label + bubble - so the scaffold gets no caption slot here.
+    // sender label + bubble - so the scaffold gets no caption slot here. A file or voice bubble takes reactions
+    // like a message bubble: the same badge on its corner and the same quick-reaction row on long press. It has
+    // no other menu entries yet (reply has no excerpt for a file, and deletion is message-only in the store), so
+    // the long press is attached only when reactions are on.
     DualRowScaffold(
         ctx = ctx,
         actions = actions,
+        reactions = if (actions.canReact && !file.reactions.isNullOrEmpty()) {
+            { ReactionChips(file.reactions!!, file.id, actions) }
+        } else {
+            null
+        },
     ) {
         val bg = if (ctx.isSelf) {
             ChatTint.color(actions.config.style(ChatRole.LOCAL).tint).copy(alpha = 0.22f)
         } else {
             MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.14f)
         }
+        var menuOpen by remember { mutableStateOf(false) }
         Column(
             modifier = Modifier
                 .widthIn(min = 180.dp)
                 .clip(BubbleShape)
                 .background(bg)
+                .then(
+                    if (actions.canReact) {
+                        Modifier.combinedClickable(onClick = {}, onLongClick = { menuOpen = true })
+                    } else {
+                        Modifier
+                    },
+                )
                 .padding(horizontal = 10.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
@@ -552,6 +574,11 @@ private fun DualFileRow(ctx: DualRowContext, actions: DualRowActions, file: Chat
                 VoiceContent(file)
             } else {
                 FileContent(file, actions, nameFind)
+            }
+            if (actions.canReact) {
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    QuickReactionRow(file.id, actions, onDismiss = { menuOpen = false })
+                }
             }
         }
     }

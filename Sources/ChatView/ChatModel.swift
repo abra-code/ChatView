@@ -57,10 +57,10 @@ public enum MessageStatus: String, Sendable, Hashable, Codable {
     }
 }
 
-/// One aggregated emoji reaction on a message: the emoji, how many participants added
-/// it, and whether the local user is one of them (`mine` drives the tinted-chip
-/// treatment and the toggle affordance). A transport replaces the whole reaction set
-/// per message (`.reactionsChanged`), so counts are always authoritative.
+/// One aggregated emoji reaction on a message or a file / voice item: the emoji, how many
+/// participants added it, and whether the local user is one of them (`mine` drives the
+/// tinted-chip treatment and the toggle affordance). A transport replaces the whole reaction
+/// set per item (`.reactionsChanged`), so counts are always authoritative.
 public struct Reaction: Equatable, Sendable, Codable {
     public let emoji: String
     public let count: Int
@@ -546,7 +546,8 @@ public enum FileTransferStatus: String, Sendable, Hashable, Codable {
 /// when available (local or downloaded); while it is still arriving, `transferStatus` /
 /// `progress` drive the transfer UI. `durationSeconds` is the clip length for a voice
 /// message. `status` is the message-level delivery state (as on `ChatMessage`), separate
-/// from `transferStatus` (the byte-transfer state).
+/// from `transferStatus` (the byte-transfer state). `reactions` is the aggregated emoji
+/// reaction set, replaced whole by `.reactionsChanged`, exactly as on a message.
 public struct ChatFile: Identifiable, Equatable, Sendable, Codable {
     public enum Kind: String, Sendable, Codable {
         case file, voice
@@ -564,12 +565,13 @@ public struct ChatFile: Identifiable, Equatable, Sendable, Codable {
     public let durationSeconds: Int?
     public var transferStatus: FileTransferStatus
     public var progress: Double?      // 0...1 while transferring; nil when unknown / not applicable
+    public var reactions: [Reaction]? // aggregated emoji reactions
 
     public init(id: String, role: ChatRole, senderID: String? = nil, senderName: String? = nil,
                 timestamp: String? = nil, status: MessageStatus? = nil, name: String,
                 sizeBytes: Int? = nil, url: URL? = nil, kind: Kind = .file,
                 durationSeconds: Int? = nil, transferStatus: FileTransferStatus = .completed,
-                progress: Double? = nil) {
+                progress: Double? = nil, reactions: [Reaction]? = nil) {
         self.id = id
         self.role = role
         self.senderID = senderID
@@ -583,10 +585,11 @@ public struct ChatFile: Identifiable, Equatable, Sendable, Codable {
         self.durationSeconds = durationSeconds
         self.transferStatus = transferStatus
         self.progress = progress
+        self.reactions = reactions
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, role, senderID, senderName, timestamp, status, name, sizeBytes, url, kind, durationSeconds, transferStatus, progress
+        case id, role, senderID, senderName, timestamp, status, name, sizeBytes, url, kind, durationSeconds, transferStatus, progress, reactions
     }
 
     public init(from decoder: Decoder) throws {
@@ -604,6 +607,7 @@ public struct ChatFile: Identifiable, Equatable, Sendable, Codable {
         self.durationSeconds = try container.decodeIfPresent(Int.self, forKey: .durationSeconds)
         self.transferStatus = try container.decodeIfPresent(FileTransferStatus.self, forKey: .transferStatus) ?? .completed
         self.progress = try container.decodeIfPresent(Double.self, forKey: .progress)
+        self.reactions = try container.decodeIfPresent([Reaction].self, forKey: .reactions)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -621,6 +625,7 @@ public struct ChatFile: Identifiable, Equatable, Sendable, Codable {
         try container.encodeIfPresent(durationSeconds, forKey: .durationSeconds)
         try container.encode(transferStatus, forKey: .transferStatus)
         try container.encodeIfPresent(progress, forKey: .progress)
+        try container.encodeIfPresent(reactions, forKey: .reactions)
     }
 }
 
@@ -1114,7 +1119,8 @@ extension ChatItem {
                                   senderName: file.senderName, timestamp: stamp, status: file.status,
                                   name: file.name, sizeBytes: file.sizeBytes, url: file.url,
                                   kind: file.kind, durationSeconds: file.durationSeconds,
-                                  transferStatus: file.transferStatus, progress: file.progress))
+                                  transferStatus: file.transferStatus, progress: file.progress,
+                                  reactions: file.reactions))
         case .memberEvent(let event):
             guard event.timestamp == nil else { return self }
             return .memberEvent(MemberEvent(id: event.id, timestamp: stamp, kind: event.kind,

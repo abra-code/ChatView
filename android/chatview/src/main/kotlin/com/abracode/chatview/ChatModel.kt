@@ -94,7 +94,7 @@ enum class MessageStatus {
         }
 }
 
-/** One aggregated emoji reaction on a message. A transport replaces the whole reaction set per message. */
+/** One aggregated emoji reaction on a message or a file / voice item. A transport replaces the whole reaction set per item. */
 @Serializable
 data class Reaction(
     val emoji: String,
@@ -397,6 +397,8 @@ data class ChatFile(
     val durationSeconds: Int? = null,
     @EncodeDefault(EncodeDefault.Mode.ALWAYS) val transferStatus: FileTransferStatus = FileTransferStatus.COMPLETED,
     val progress: Double? = null,
+    /** The aggregated emoji reaction set, replaced whole by ReactionsChanged, exactly as on a message. */
+    val reactions: List<Reaction>? = null,
 ) {
     @Serializable
     enum class Kind {

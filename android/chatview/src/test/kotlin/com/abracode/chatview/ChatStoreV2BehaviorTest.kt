@@ -185,6 +185,29 @@ class ChatStoreV2BehaviorTest {
     }
 
     @Test
+    fun toggleReactionOnAFileDerivesAddFromItsOwnReactions() = runTest {
+        val (store, sink) = makeStarted(
+            features = buildJsonObject { putJsonObject("features") { put("reactions", true) } },
+            capabilities = allCaps(),
+        )
+        store.route(
+            ChatEvent.FileAdded(
+                ChatFile(
+                    id = "f1", role = ChatRole.REMOTE, name = "a.pdf", transferStatus = FileTransferStatus.COMPLETED,
+                    reactions = listOf(Reaction(emoji = thumbsUp, count = 1, mine = true)),
+                ),
+            ),
+        )
+        store.toggleReaction("f1", thumbsUp)
+        advanceUntilIdle()
+        val cmd = sink.all().firstOrNull()
+        assertTrue(cmd is ChatCommand.ToggleReaction)
+        cmd as ChatCommand.ToggleReaction
+        assertEquals("f1", cmd.itemID)
+        assertFalse("an existing own reaction on a file -> remove", cmd.add)
+    }
+
+    @Test
     fun editDeleteGating() = runTest {
         val (store, sink) = makeStarted(
             features = buildJsonObject { putJsonObject("features") { put("editing", true); put("deletion", true) } },

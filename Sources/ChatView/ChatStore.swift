@@ -776,8 +776,8 @@ final class ChatStore: ObservableObject {
     // the view gates the same way for display, so a command only reaches here when both allow it,
     // but the guard is repeated defensively (a stale view, a programmatic call).
 
-    /// Toggles the local user's reaction with `emoji` on a message. The add / remove direction is
-    /// derived from the current reaction set (remove when already `mine`, else add).
+    /// Toggles the local user's reaction with `emoji` on a message or a file / voice item. The add /
+    /// remove direction is derived from the item's current reaction set (remove when already `mine`, else add).
     func toggleReaction(itemID: String, emoji: String) {
         guard config.features.reactions, capabilities.reactions else {
             return
@@ -1130,7 +1130,12 @@ final class ChatStore: ObservableObject {
             applyStatusWatermark(status: status, upTo: upToItemID)
 
         case .reactionsChanged(let itemID, let reactions):
-            mutateMessage(itemID, kind: "reactions") { $0.reactions = reactions }
+            // A file / voice item carries reactions like a message does; the event is keyed by item id only.
+            if case .file? = item(itemID) {
+                mutateFile(itemID, fireEntry: true) { $0.reactions = reactions }
+            } else {
+                mutateMessage(itemID, kind: "reactions") { $0.reactions = reactions }
+            }
 
         case .messageEdited(let itemID, let newText, let editedAt):
             mutateMessage(itemID, kind: "edit") {
@@ -1962,8 +1967,8 @@ final class ChatStore: ObservableObject {
         fireEntry(type: "message", id: id, data: ChatItem.message(message.finalized), updated: true)
     }
 
-    /// Mutates a file by id in place; re-fires its entry only when its transfer reached a terminal
-    /// state (`fireOnTerminal`), so per-tick progress does not spam the entry channel.
+    /// Mutates a file by id in place; re-fires its entry only when asked (a terminal transfer state, a
+    /// reactions change), so per-tick progress does not spam the entry channel.
     private func mutateFile(_ id: String, fireEntry fireOnTerminal: Bool, _ transform: (inout ChatFile) -> Void) {
         guard let index = anyItemIndex(id), case .file(var file) = items[index] else {
             logger.log("Chat file update for unknown file '\(id)'; ignoring", .verbose)
@@ -2124,10 +2129,11 @@ final class ChatStore: ObservableObject {
     }
 
     private func reactions(of id: String) -> [Reaction]? {
-        if case .message(let message)? = item(id) {
-            return message.reactions
+        switch item(id) {
+        case .message(let message)?: return message.reactions
+        case .file(let file)?:       return file.reactions
+        default:                     return nil
         }
-        return nil
     }
 
     /// Builds the reply reference for an optimistic reply: the original's id, a pre-truncated plain

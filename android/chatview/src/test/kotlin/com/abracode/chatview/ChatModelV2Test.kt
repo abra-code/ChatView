@@ -159,6 +159,19 @@ class ChatModelV2Test {
     }
 
     @Test
+    fun fileReactionsRoundTripAndDefaultToNull() {
+        val reacted = ChatFile(
+            id = "f1", role = ChatRole.REMOTE, name = "a.pdf", transferStatus = FileTransferStatus.COMPLETED,
+            reactions = listOf(Reaction(emoji = thumbsUp, count = 2, mine = true)),
+        )
+        val decoded = roundTrip(ChatFile.serializer(), reacted)
+        assertEquals(reacted, decoded)
+        assertEquals(2, decoded.reactions?.firstOrNull()?.count)
+        val bare = (decodeItem("""{"type":"file","file":{"id":"f2","role":"remote","name":"x.txt"}}""") as ChatItem.File).file
+        assertNull(bare.reactions)
+    }
+
+    @Test
     fun fileKindAndTransferStatusDefaultWhenAbsent() {
         val decoded = decodeItem("""{"type":"file","file":{"id":"f2","role":"remote","name":"x.txt"}}""")
         val file = (decoded as ChatItem.File).file

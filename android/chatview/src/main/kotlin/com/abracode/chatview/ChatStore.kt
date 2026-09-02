@@ -520,7 +520,7 @@ internal class ChatStore(
                 if (existing.file.transferStatus != FileTransferStatus.FAILED) {
                     return
                 }
-                mutateFile(itemID, fireOnTerminal = false) {
+                mutateFile(itemID, fireEntry = false) {
                     it.copy(transferStatus = FileTransferStatus.TRANSFERRING, progress = 0.0)
                 }
             }
@@ -955,7 +955,12 @@ internal class ChatStore(
             }
 
             is ChatEvent.ReactionsChanged -> {
-                mutateMessage(event.itemID, "reactions") { it.copy(reactions = event.reactions) }
+                // A file / voice item carries reactions like a message does; the event is keyed by item id only.
+                if (item(event.itemID) is ChatItem.File) {
+                    mutateFile(event.itemID, fireEntry = true) { it.copy(reactions = event.reactions) }
+                } else {
+                    mutateMessage(event.itemID, "reactions") { it.copy(reactions = event.reactions) }
+                }
             }
 
             is ChatEvent.MessageEdited -> {
@@ -998,7 +1003,7 @@ internal class ChatStore(
                 val terminal = event.transferStatus == FileTransferStatus.COMPLETED ||
                     event.transferStatus == FileTransferStatus.FAILED ||
                     event.transferStatus == FileTransferStatus.CANCELLED
-                mutateFile(event.itemID, fireOnTerminal = terminal) {
+                mutateFile(event.itemID, fireEntry = terminal) {
                     it.copy(progress = event.progress, transferStatus = event.transferStatus)
                 }
             }
@@ -1352,8 +1357,8 @@ internal class ChatStore(
         fireEntry("message", id, updated = true) { itemElement(ChatItem.Message(updated.finalized())) }
     }
 
-    /** Mutates a file by id in place; re-fires its entry only when its transfer reached a terminal state. */
-    private fun mutateFile(id: String, fireOnTerminal: Boolean, transform: (ChatFile) -> ChatFile) {
+    /** Mutates a file by id in place; re-fires its entry only when asked (a terminal transfer state, a reactions change), so per-tick progress does not spam the entry channel. */
+    private fun mutateFile(id: String, fireEntry: Boolean, transform: (ChatFile) -> ChatFile) {
         val index = anyItemIndex(id)
         val file = (items.getOrNull(index ?: -1) as? ChatItem.File)?.file
         if (index == null || file == null) {
@@ -1362,7 +1367,7 @@ internal class ChatStore(
         }
         val updated = transform(file)
         _items[index] = ChatItem.File(updated)
-        if (fireOnTerminal) {
+        if (fireEntry) {
             fireEntry("file", id, updated = true) { itemElement(ChatItem.File(updated)) }
         }
     }
@@ -1511,7 +1516,11 @@ internal class ChatStore(
         else -> null
     }
 
-    private fun reactions(id: String): List<Reaction>? = (item(id) as? ChatItem.Message)?.message?.reactions
+    private fun reactions(id: String): List<Reaction>? = when (val existing = item(id)) {
+        is ChatItem.Message -> existing.message.reactions
+        is ChatItem.File -> existing.file.reactions
+        else -> null
+    }
 
     /** Builds the reply reference for an optimistic reply. */
     private fun makeReplyRef(itemID: String): ReplyRef? {

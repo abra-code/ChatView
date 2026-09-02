@@ -223,6 +223,17 @@ final class ChatStoreV2RoutingTests: XCTestCase {
         XCTAssertEqual(store.items.count, 1)
     }
 
+    func testReactionsOnAFileMutateInPlace() {
+        let store = makeStore()
+        store.route(.fileAdded(ChatFile(id: "f1", role: .remote, name: "a.pdf", transferStatus: .completed)))
+        store.route(.reactionsChanged(itemID: "f1", reactions: [Reaction(emoji: "\u{1F44D}", count: 1, mine: true)]))
+        guard case .file(let file) = store.items[0] else { return XCTFail() }
+        XCTAssertEqual(file.reactions?.first?.emoji, "\u{1F44D}")
+        store.route(.reactionsChanged(itemID: "f1", reactions: []))
+        guard case .file(let cleared) = store.items[0] else { return XCTFail() }
+        XCTAssertEqual(cleared.reactions, [], "a file's reaction set is replaced whole, like a message's")
+    }
+
     func testTypingIndicatorExpiresOnTheVirtualClock() {
         let scheduler = ManualChatScheduler()
         let store = makeStore(scheduler: scheduler)
@@ -460,6 +471,20 @@ final class ChatStoreV2BehaviorTests: XCTestCase {
         for case .message(let m) in store.items where m.id == "bad" {
             XCTAssertEqual(m.status, .sending, "a resent message shows as sending again")
         }
+    }
+
+    func testToggleReactionOnAFileDerivesAddFromItsOwnReactions() async {
+        let (store, sink) = makeStarted(features: ["features": ["reactions": true]], capabilities: allCaps())
+        store.route(.fileAdded(ChatFile(id: "f1", role: .remote, name: "a.pdf", transferStatus: .completed,
+                                        reactions: [Reaction(emoji: "\u{1F44D}", count: 1, mine: true)])))
+        store.toggleReaction(itemID: "f1", emoji: "\u{1F44D}")
+        await settle()
+        guard case .toggleReaction(let id, let emoji, let add)? = sink.all().first else {
+            return XCTFail("expected toggleReaction")
+        }
+        XCTAssertEqual(id, "f1")
+        XCTAssertEqual(emoji, "\u{1F44D}")
+        XCTAssertFalse(add, "an existing own reaction on a file -> remove")
     }
 
     func testResendAlsoRetriesAFailedFileTransfer() async {

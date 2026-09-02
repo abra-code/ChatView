@@ -125,6 +125,16 @@ final class ChatModelV2RoundTripTests: XCTestCase {
         XCTAssertEqual(file.durationSeconds, 12)
     }
 
+    func testFileReactionsRoundTripAndDefaultToNil() throws {
+        let reacted = ChatFile(id: "f1", role: .remote, name: "a.pdf", transferStatus: .completed,
+                               reactions: [Reaction(emoji: "\u{1F44D}", count: 2, mine: true)])
+        let decoded = try JSONDecoder().decode(ChatFile.self, from: JSONEncoder().encode(reacted))
+        XCTAssertEqual(decoded, reacted)
+        XCTAssertEqual(decoded.reactions?.first?.count, 2)
+        let bare = try JSONDecoder().decode(ChatFile.self, from: Data(#"{"id":"f2","role":"remote","name":"x.txt"}"#.utf8))
+        XCTAssertNil(bare.reactions)
+    }
+
     /// `ChatFile.kind` and `.transferStatus` default when absent (kind -> file, transferStatus ->
     /// completed), so a minimally-specified file document decodes sensibly.
     func testFileKindAndTransferStatusDefaultWhenAbsent() throws {

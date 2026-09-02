@@ -82,7 +82,7 @@ struct DualTranscriptRow: View {
             DualImageRow(ctx: ctx, role: role, image: image, config: config, maxBubbleWidth: maxBubbleWidth)
         case .file(let file):
             DualFileRow(ctx: ctx, file: file, config: config, maxBubbleWidth: maxBubbleWidth,
-                        showsSenderNames: showsSenderNames, audio: audio,
+                        showsSenderNames: showsSenderNames, actions: actions, audio: audio,
                         onCancel: { actions.cancelTransfer(file.id) },
                         onRetry: { onResend(file.id) }, nameFind: fileNameFind)
         case .memberEvent(let event):
@@ -252,15 +252,6 @@ private struct DualMessageRow: View {
     let highlights: RichTextHighlights?
     let onResend: (String) -> Void
 
-    /// How far the reaction badge hangs above the bubble's top edge and outside its outer edge, and the room the
-    /// row reserves above a reacted bubble (the rise plus clearance from the bubble before it). Measured against
-    /// Messages on macOS, where a tapback sits about 60% above the corner and gets about 18 pt of extra room.
-    /// The rise puts the badge's bottom edge (about 25 pt tall at the default text size) at the bubble's text
-    /// inset, so it covers the corner and not the first line; a larger text size grows the badge downward.
-    static let reactionRise: CGFloat = 18
-    static let reactionOutset: CGFloat = 10
-    static let reactionInset: CGFloat = reactionRise + 2
-
     private var isSelf: Bool { ctx.isSelf }
     private var isFirstInRun: Bool { ctx.info.isFirstInRun }
     private var isLastInRun: Bool { ctx.info.isLastInRun }
@@ -279,12 +270,8 @@ private struct DualMessageRow: View {
                     .padding(.horizontal, 4)
             }
             // Avatar + bubble in a bottom-aligned row so the incoming avatar meets the bubble's BOTTOM edge (not
-            // the caption below). The reaction overlays the bubble's top-OUTER corner (Apple-style), decoupled
-            // from the bottom caption so it never collides with the time / delivery status.
-            // Chips are an affordance, so they are gated on canReact (features AND capabilities), never on data
-            // presence alone - a seeded / inbound message can carry reaction data even when the document/transport
-            // does not enable reactions.
-            let showsReactions = actions.canReact && !(message.reactions ?? []).isEmpty
+            // the caption below). The reaction badge hangs off the bubble's top-OUTER corner (Apple-style),
+            // decoupled from the bottom caption so it never collides with the time / delivery status.
             HStack(alignment: .bottom, spacing: 6) {
                 if isSelf {
                     Spacer(minLength: 40)
@@ -292,22 +279,11 @@ private struct DualMessageRow: View {
                     avatarGutter
                 }
                 bubble
-                    // The overlay is applied to the hugging bubble BEFORE the maxWidth frame, so the badge pins to
-                    // the bubble's real corner (not the frame edge). Like a Messages tapback it hangs off that corner:
-                    // most of it above the top edge and a third of a chip outside the side edge, so it covers the
-                    // rounded corner and stays off the text. An overlay adds nothing to layout, so the inset below
-                    // reserves the room it hangs into; without it the badge lands on the previous bubble of a run.
-                    .overlay(alignment: isSelf ? .topLeading : .topTrailing) {
-                        if showsReactions, let reactions = message.reactions {
-                            ReactionChips(reactions: reactions) { emoji in
-                                actions.toggleReaction(message.id, emoji)
-                            }
-                            .padding(2)
-                            .background(.background, in: Capsule())
-                            .offset(x: isSelf ? -Self.reactionOutset : Self.reactionOutset, y: -Self.reactionRise)
-                        }
+                    // Applied to the hugging bubble BEFORE the maxWidth frame, so the badge pins to the bubble's
+                    // real corner (not the frame edge).
+                    .reactionBadge(actions.canReact ? message.reactions : nil, isSelf: isSelf) { emoji in
+                        actions.toggleReaction(message.id, emoji)
                     }
-                    .padding(.top, showsReactions ? Self.reactionInset : 0)
                     .frame(maxWidth: maxBubbleWidth, alignment: isSelf ? .trailing : .leading)
                 if !isSelf {
                     Spacer(minLength: 40)
@@ -359,21 +335,7 @@ private struct DualMessageRow: View {
     @ViewBuilder
     private var bubbleMenu: some View {
         if actions.canReact {
-            // On macOS a submenu: a ControlGroup there becomes a submenu too, but titled with its items' labels
-            // joined by slashes (a row of six emoji) and with its label's icon dropped, so a Menu with a Label
-            // keeps the smiley beside "React" like Reply and Copy keep theirs. On iOS a ControlGroup renders as
-            // the inline row of reactions at the top of the menu.
-            #if os(macOS)
-            Menu {
-                quickReactionButtons
-            } label: {
-                Label("React", systemImage: "face.smiling")
-            }
-            #else
-            ControlGroup {
-                quickReactionButtons
-            }
-            #endif
+            QuickReactionMenu(itemID: message.id, toggle: actions.toggleReaction)
         }
         if actions.canReply {
             Button { actions.reply(message) } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
@@ -384,12 +346,6 @@ private struct DualMessageRow: View {
         Button { copyText() } label: { Label("Copy", systemImage: "doc.on.doc") }
         if actions.canDelete, isSelf {
             Button(role: .destructive) { actions.delete(message) } label: { Label("Delete", systemImage: "trash") }
-        }
-    }
-
-    private var quickReactionButtons: some View {
-        ForEach(DualRowActions.quickReactions, id: \.self) { emoji in
-            Button(emoji) { actions.toggleReaction(message.id, emoji) }
         }
     }
 
@@ -565,6 +521,7 @@ private struct DualFileRow: View {
     let config: ChatConfiguration
     let maxBubbleWidth: CGFloat
     let showsSenderNames: Bool
+    let actions: DualRowActions
     @ObservedObject var audio: ChatAudioController
     let onCancel: () -> Void
     let onRetry: () -> Void
@@ -587,7 +544,7 @@ private struct DualFileRow: View {
                 if !isSelf, ctx.info.isFirstInRun, showsSenderNames, let name = ctx.senderName, !name.isEmpty {
                     Text(name).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 4)
                 }
-                bubble
+                reactableBubble
             }
             .frame(maxWidth: maxBubbleWidth, alignment: isSelf ? .trailing : .leading)
             if !isSelf {
@@ -595,6 +552,22 @@ private struct DualFileRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: isSelf ? .trailing : .leading)
+    }
+
+    // A file or voice bubble takes reactions like a message bubble: the same badge on its corner and the same
+    // React entry in its context menu. It has no other menu entries yet (reply has no excerpt for a file, and
+    // deletion is message-only in the store), so the menu is attached only when reactions are on - an empty
+    // context menu would still pop on iOS.
+    @ViewBuilder
+    private var reactableBubble: some View {
+        let badged = bubble.reactionBadge(actions.canReact ? file.reactions : nil, isSelf: isSelf) { emoji in
+            actions.toggleReaction(file.id, emoji)
+        }
+        if actions.canReact {
+            badged.contextMenu { QuickReactionMenu(itemID: file.id, toggle: actions.toggleReaction) }
+        } else {
+            badged
+        }
     }
 
     @ViewBuilder
@@ -763,6 +736,73 @@ private struct ReplyQuote: View {
         // can hug too - the bubble's column-width proposal caps how wide a long quote may grow.
         .fixedSize(horizontal: false, vertical: true)
         .padding(.vertical, 2)
+    }
+}
+
+// MARK: - Reaction badge and menu
+
+/// How far the reaction badge hangs above a bubble's top edge and outside its outer edge, and the room the row
+/// reserves above a reacted bubble (the rise plus clearance from the bubble before it). Measured against
+/// Messages on macOS, where a tapback sits about 60% above the corner and gets about 18 pt of extra room. The
+/// rise puts the badge's bottom edge (about 25 pt tall at the default text size) at the bubble's text inset,
+/// so it covers the corner and not the first line; a larger text size grows the badge downward.
+private enum ReactionBadge {
+    static let rise: CGFloat = 18
+    static let outset: CGFloat = 10
+    static let inset: CGFloat = rise + 2
+}
+
+private extension View {
+    /// Hangs the reaction badge off this bubble's top-outer corner and reserves the room it hangs into. Like a
+    /// Messages tapback: most of the badge above the top edge and a third of a chip outside the side edge, so it
+    /// covers the rounded corner and stays off the content. An overlay adds nothing to layout, so the top inset
+    /// reserves the room; without it the badge lands on the previous bubble of a run. Apply to the hugging bubble
+    /// BEFORE any maxWidth frame so the badge pins to the bubble's real corner.
+    ///
+    /// `reactions` nil or empty draws nothing and reserves nothing. The caller passes nil unless reactions are
+    /// enabled (features AND capabilities), never gating on data presence alone - a seeded / inbound item can
+    /// carry reaction data even when the document/transport does not enable reactions.
+    func reactionBadge(_ reactions: [Reaction]?, isSelf: Bool, toggle: @escaping (String) -> Void) -> some View {
+        let shown = (reactions ?? []).isEmpty ? nil : reactions
+        return self
+            .overlay(alignment: isSelf ? .topLeading : .topTrailing) {
+                if let shown {
+                    ReactionChips(reactions: shown, toggle: toggle)
+                        .padding(2)
+                        .background(.background, in: Capsule())
+                        .offset(x: isSelf ? -ReactionBadge.outset : ReactionBadge.outset, y: -ReactionBadge.rise)
+                }
+            }
+            .padding(.top, shown == nil ? 0 : ReactionBadge.inset)
+    }
+}
+
+/// The quick-reaction entry of a bubble's context menu. On macOS a submenu: a ControlGroup there becomes a
+/// submenu too, but titled with its items' labels joined by slashes (a row of six emoji) and with its label's
+/// icon dropped, so a Menu with a Label keeps the smiley beside "React" like Reply and Copy keep theirs. On iOS
+/// a ControlGroup renders as the inline row of reactions at the top of the menu.
+private struct QuickReactionMenu: View {
+    let itemID: String
+    let toggle: (_ itemID: String, _ emoji: String) -> Void
+
+    var body: some View {
+        #if os(macOS)
+        Menu {
+            buttons
+        } label: {
+            Label("React", systemImage: "face.smiling")
+        }
+        #else
+        ControlGroup {
+            buttons
+        }
+        #endif
+    }
+
+    private var buttons: some View {
+        ForEach(DualRowActions.quickReactions, id: \.self) { emoji in
+            Button(emoji) { toggle(itemID, emoji) }
+        }
     }
 }
 
