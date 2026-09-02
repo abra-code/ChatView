@@ -88,7 +88,7 @@ final class ChatDualSnapshotTests: XCTestCase {
                                       actions: DualRowActions(canReply: true, canEdit: true, canDelete: true, canReact: true),
                                       highlighted: false, audio: audioController, onResend: { _ in })
                 }
-                .padding(.top, row.info.isFirstInRun ? 8 : 2)
+                .padding(.top, row.info.isFirstInRun ? 8 : 4)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             TypingIndicatorRow(names: ["Sam"]).padding(.top, 6)

@@ -252,6 +252,15 @@ private struct DualMessageRow: View {
     let highlights: RichTextHighlights?
     let onResend: (String) -> Void
 
+    /// How far the reaction badge hangs above the bubble's top edge and outside its outer edge, and the room the
+    /// row reserves above a reacted bubble (the rise plus clearance from the bubble before it). Measured against
+    /// Messages on macOS, where a tapback sits about 60% above the corner and gets about 18 pt of extra room.
+    /// The rise puts the badge's bottom edge (about 25 pt tall at the default text size) at the bubble's text
+    /// inset, so it covers the corner and not the first line; a larger text size grows the badge downward.
+    static let reactionRise: CGFloat = 18
+    static let reactionOutset: CGFloat = 10
+    static let reactionInset: CGFloat = reactionRise + 2
+
     private var isSelf: Bool { ctx.isSelf }
     private var isFirstInRun: Bool { ctx.info.isFirstInRun }
     private var isLastInRun: Bool { ctx.info.isLastInRun }
@@ -272,6 +281,10 @@ private struct DualMessageRow: View {
             // Avatar + bubble in a bottom-aligned row so the incoming avatar meets the bubble's BOTTOM edge (not
             // the caption below). The reaction overlays the bubble's top-OUTER corner (Apple-style), decoupled
             // from the bottom caption so it never collides with the time / delivery status.
+            // Chips are an affordance, so they are gated on canReact (features AND capabilities), never on data
+            // presence alone - a seeded / inbound message can carry reaction data even when the document/transport
+            // does not enable reactions.
+            let showsReactions = actions.canReact && !(message.reactions ?? []).isEmpty
             HStack(alignment: .bottom, spacing: 6) {
                 if isSelf {
                     Spacer(minLength: 40)
@@ -279,21 +292,22 @@ private struct DualMessageRow: View {
                     avatarGutter
                 }
                 bubble
-                    // Chips are an affordance, so they are gated on canReact (features AND capabilities), never on
-                    // data presence alone - a seeded / inbound message can carry reaction data even when the
-                    // document/transport does not enable reactions. The overlay is applied to the hugging bubble
-                    // BEFORE the maxWidth frame, so the badge pins to the bubble's real corner (not the frame edge).
+                    // The overlay is applied to the hugging bubble BEFORE the maxWidth frame, so the badge pins to
+                    // the bubble's real corner (not the frame edge). Like a Messages tapback it hangs off that corner:
+                    // most of it above the top edge and a third of a chip outside the side edge, so it covers the
+                    // rounded corner and stays off the text. An overlay adds nothing to layout, so the inset below
+                    // reserves the room it hangs into; without it the badge lands on the previous bubble of a run.
                     .overlay(alignment: isSelf ? .topLeading : .topTrailing) {
-                        if actions.canReact, let reactions = message.reactions, !reactions.isEmpty {
+                        if showsReactions, let reactions = message.reactions {
                             ReactionChips(reactions: reactions) { emoji in
                                 actions.toggleReaction(message.id, emoji)
                             }
                             .padding(2)
                             .background(.background, in: Capsule())
-                            .shadow(radius: 1.5, y: 1)
-                            .offset(x: isSelf ? -8 : 8, y: -10)
+                            .offset(x: isSelf ? -Self.reactionOutset : Self.reactionOutset, y: -Self.reactionRise)
                         }
                     }
+                    .padding(.top, showsReactions ? Self.reactionInset : 0)
                     .frame(maxWidth: maxBubbleWidth, alignment: isSelf ? .trailing : .leading)
                 if !isSelf {
                     Spacer(minLength: 40)
@@ -339,17 +353,27 @@ private struct DualMessageRow: View {
         .contextMenu { if !isTombstone { bubbleMenu } }
     }
 
-    // The message context menu: a quick-reaction row on top (when reactions are enabled), then the
-    // gated actions and the always-available Copy. Edit / Delete are own-message only (the caller's
+    // The message context menu: the quick reactions on top (when reactions are enabled; a submenu on macOS,
+    // an inline row on iOS), then the gated actions and the always-available Copy. Edit / Delete are own-message only (the caller's
     // gate already accounts for that via canEdit / canDelete plus isSelf).
     @ViewBuilder
     private var bubbleMenu: some View {
         if actions.canReact {
-            ControlGroup {
-                ForEach(DualRowActions.quickReactions, id: \.self) { emoji in
-                    Button(emoji) { actions.toggleReaction(message.id, emoji) }
-                }
+            // On macOS a submenu: a ControlGroup there becomes a submenu too, but titled with its items' labels
+            // joined by slashes (a row of six emoji) and with its label's icon dropped, so a Menu with a Label
+            // keeps the smiley beside "React" like Reply and Copy keep theirs. On iOS a ControlGroup renders as
+            // the inline row of reactions at the top of the menu.
+            #if os(macOS)
+            Menu {
+                quickReactionButtons
+            } label: {
+                Label("React", systemImage: "face.smiling")
             }
+            #else
+            ControlGroup {
+                quickReactionButtons
+            }
+            #endif
         }
         if actions.canReply {
             Button { actions.reply(message) } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
@@ -360,6 +384,12 @@ private struct DualMessageRow: View {
         Button { copyText() } label: { Label("Copy", systemImage: "doc.on.doc") }
         if actions.canDelete, isSelf {
             Button(role: .destructive) { actions.delete(message) } label: { Label("Delete", systemImage: "trash") }
+        }
+    }
+
+    private var quickReactionButtons: some View {
+        ForEach(DualRowActions.quickReactions, id: \.self) { emoji in
+            Button(emoji) { actions.toggleReaction(message.id, emoji) }
         }
     }
 
@@ -738,7 +768,8 @@ private struct ReplyQuote: View {
 
 // MARK: - Reaction chips
 
-/// A wrapping row of reaction chips under a bubble: emoji + count, `mine` tinted; tap toggles.
+/// A wrapping row of reaction chips on a bubble's corner: emoji + count, `mine` tinted; tap toggles. Flat like a
+/// Messages tapback: the fill alone tells `mine` from the rest, with no stroke and no shadow.
 private struct ReactionChips: View {
     let reactions: [Reaction]
     let toggle: (String) -> Void
@@ -760,14 +791,12 @@ private struct ReactionChips: View {
                     }
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
-                    .background(reaction.mine ? Color.accentColor.opacity(0.22) : Color.secondary.opacity(0.14),
+                    .background(reaction.mine ? Color.accentColor.opacity(0.3) : Color.secondary.opacity(0.2),
                                 in: Capsule())
-                    .overlay(Capsule().strokeBorder(reaction.mine ? Color.accentColor.opacity(0.5) : Color.clear))
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 2)
     }
 }
 

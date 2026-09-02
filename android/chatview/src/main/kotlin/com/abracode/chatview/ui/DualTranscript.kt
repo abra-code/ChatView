@@ -114,7 +114,7 @@ internal fun DualTranscriptRow(ctx: DualRowContext, actions: DualRowActions, hig
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = if (ctx.info.isFirstInRun) 8.dp else 2.dp),
+            .padding(top = if (ctx.info.isFirstInRun) 8.dp else 4.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         val ts = ctx.timestamp
@@ -157,6 +157,16 @@ internal fun DualTranscriptRow(ctx: DualRowContext, actions: DualRowActions, hig
 }
 
 // --- Shared dual skeleton. ------------------------------------------------------------------------------------
+
+/**
+ * How far the reaction badge hangs above the bubble's top edge and outside its outer edge, and the room the row
+ * reserves above a reacted bubble (the rise plus clearance from the bubble before it). Same values as the Swift
+ * row (DualMessageRow.reactionRise / reactionOutset / reactionInset). The rise puts the badge's bottom edge near
+ * the bubble's text inset, so it covers the corner and stays off the first line.
+ */
+private val REACTION_RISE = 18.dp
+private val REACTION_OUTSET = 10.dp
+private val REACTION_INSET = REACTION_RISE + 2.dp
 
 /**
  * The leading / trailing bubble skeleton. A sender label (first of an incoming run) sits above a bottom-aligned
@@ -206,25 +216,33 @@ private fun DualRowScaffold(
                     Spacer(Modifier.width(28.dp).height(1.dp))
                 }
             }
-            Box(modifier = Modifier.widthIn(max = actions.maxBubbleWidth)) {
+            // The badge hangs into the top padding, which is the room the row reserves for it: offset() is
+            // placement-only and adds nothing to layout, so without the inset the badge lands on the previous
+            // bubble of a run. The padding is outside the Box, so matchParentSize below still matches the bubble.
+            Box(
+                modifier = Modifier
+                    .widthIn(max = actions.maxBubbleWidth)
+                    .padding(top = if (reactions != null) REACTION_INSET else 0.dp),
+            ) {
                 bubble()
                 if (reactions != null) {
                     // Overlapping badge on the bubble's top-outer corner (trailing for incoming, leading for own),
-                    // lifted onto a surface pill so it reads above the bubble. matchParentSize sizes this layer to the
-                    // bubble WITHOUT driving the Box's own size, so a reaction pill wider than a short bubble does not
-                    // grow the Box and shove the badge / bubble off-corner - TopEnd / TopStart pin to the bubble's real
-                    // corner, matching SwiftUI's .overlay (which never affects the base geometry). offset() is
-                    // placement-only, so the avatar still meets the bubble's bottom edge.
+                    // on a flat surface pill (no elevation, like the Swift row). It hangs off the corner the way a
+                    // Messages tapback does - most of it above the top edge, a third of a chip outside the side
+                    // edge - so it covers the rounded corner and stays off the text. matchParentSize sizes this
+                    // layer to the bubble WITHOUT driving the Box's own size, so a reaction pill wider than a short
+                    // bubble does not grow the Box and shove the badge / bubble off-corner - TopEnd / TopStart pin
+                    // to the bubble's real corner, matching SwiftUI's .overlay (which never affects the base
+                    // geometry). The avatar still meets the bubble's bottom edge.
                     Box(modifier = Modifier.matchParentSize()) {
                         Surface(
                             shape = RoundedCornerShape(50),
                             color = MaterialTheme.colorScheme.surface,
-                            shadowElevation = 3.dp,
                             modifier = Modifier
                                 .align(if (isSelf) Alignment.TopStart else Alignment.TopEnd)
-                                .offset(x = if (isSelf) (-8).dp else 8.dp, y = (-10).dp),
+                                .offset(x = if (isSelf) -REACTION_OUTSET else REACTION_OUTSET, y = -REACTION_RISE),
                         ) {
-                            Box(modifier = Modifier.padding(horizontal = 2.dp, vertical = 1.dp)) { reactions() }
+                            Box(modifier = Modifier.padding(2.dp)) { reactions() }
                         }
                     }
                 }
@@ -427,9 +445,9 @@ private fun ReactionChips(reactions: List<Reaction>, id: String, actions: DualRo
     ) {
         reactions.forEach { reaction ->
             val bg = if (reaction.mine) {
-                MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
             } else {
-                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.14f)
+                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f)
             }
             Row(
                 modifier = Modifier

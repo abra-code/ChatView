@@ -514,7 +514,7 @@ public struct ChatView: View {
                                   audio: audio,
                                   onResend: { store.resendMessage(itemID: $0) })
             }
-            .padding(.top, ctx.info.isFirstInRun ? 8 : 2)
+            .padding(.top, ctx.info.isFirstInRun ? 8 : 4)
             .frame(maxWidth: .infinity, alignment: .leading)
             .chatFindAnchors(isCurrent: store.find.current?.itemID == ctx.id)
             .id(ctx.id)
