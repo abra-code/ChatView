@@ -10,6 +10,11 @@ package com.abracode.chatview.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -111,6 +116,11 @@ fun ChatView(
     // the content past the threshold - the common flick-to-read gesture would then never unpin.)
     var userScrollActive by remember { mutableStateOf(false) }
     var highlightedItemID by remember { mutableStateOf<String?>(null) }
+    // Find: the current hit's bounds (window coordinates, from the row's RichText), the list's own coordinates to
+    // convert them with, and the hit index the last in-row alignment served, so each hit is aligned at most once.
+    var findMatchBounds by remember { mutableStateOf<Pair<Int, Rect>?>(null) }   // (hit index, bounds)
+    var listCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var findAlignedIndex by remember { mutableStateOf<Int?>(null) }
     var awaitingLong by remember { mutableStateOf(false) }
     // Composer reply / edit state (view-local, dual alignment). Reply / edit put a banner above the composer; the row
     // context menu sets them, the composer's cancel / submit clear them. Mirrors ChatView.swift's replyTarget /
@@ -281,6 +291,9 @@ fun ChatView(
     // --- Render. ---
 
     Column(modifier = modifier.fillMaxSize()) {
+      if (store.find.isPresented) {
+          ChatFindBar(store)
+      }
       Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val maxBubbleWidth = maxOf(120.dp, (maxWidth - 24.dp) * 0.75f)
@@ -305,12 +318,46 @@ fun ChatView(
                     jumpTo = { id -> jumpTo(id) },
                     cancelTransfer = { id -> store.cancelFileTransfer(id) },
                     resend = { id -> store.resendMessage(id) },
+                    onCurrentMatchBounds = { bounds ->
+                        // Stamped with the hit it belongs to, so the aligning effect never measures the previous
+                        // hit's frame against the new one (a row that lost the hit reports nothing).
+                        val index = store.find.currentIndex
+                        findMatchBounds = if (bounds != null && index != null) index to bounds else null
+                    },
                 )
+            }
+
+            // A new current hit: bring its row into view (which also materializes a lazy row far away), releasing
+            // the bottom pin so a live turn does not pull the reader back down. The in-row alignment below follows
+            // once the row's RichText has reported the match's bounds.
+            LaunchedEffect(store.find.current) {
+                val hit = store.find.current ?: return@LaunchedEffect
+                findAlignedIndex = null
+                findMatchBounds = null
+                isPinnedToBottom = false
+                val idx = lazyIndexOfItem(hit.itemID)
+                if (idx >= 0) listState.animateScrollToItem(idx)
+            }
+            // Once per hit: if the match inside the (already shown) row is still outside the viewport - a long
+            // message - scroll by the amount that puts it a third of the way down.
+            LaunchedEffect(findMatchBounds, store.find.currentIndex) {
+                val index = store.find.currentIndex ?: return@LaunchedEffect
+                if (findAlignedIndex == index) return@LaunchedEffect
+                val (boundsIndex, bounds) = findMatchBounds ?: return@LaunchedEffect
+                if (boundsIndex != index) return@LaunchedEffect
+                val list = listCoordinates ?: return@LaunchedEffect
+                if (!list.isAttached) return@LaunchedEffect
+                findAlignedIndex = index
+                val top = list.windowToLocal(bounds.topLeft).y
+                val height = list.size.height.toFloat()
+                if (top < 0f || top + bounds.height > height) {
+                    listState.animateScrollBy(top - height / 3f)
+                }
             }
 
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxSize().testTag("chat.transcript"),
+                modifier = Modifier.fillMaxSize().onGloballyPositioned { listCoordinates = it }.testTag("chat.transcript"),
                 contentPadding = PaddingValues(12.dp),
             ) {
                 item(key = "chat.topSentinel") { Spacer(Modifier.height(1.dp)) }
@@ -319,7 +366,7 @@ fun ChatView(
                 }
                 items(count = contexts.size, key = { contexts[it].id }) { index ->
                     val ctx = contexts[index]
-                    DualTranscriptRow(ctx, actions, highlighted = ctx.id == highlightedItemID)
+                    DualTranscriptRow(ctx, actions, highlighted = ctx.id == highlightedItemID, find = RowFind.of(store.find, ctx.id))
                 }
                 if (typingVisible) {
                     item(key = "chat.typing") { TypingIndicatorRow(store.typingParticipants) }
@@ -328,6 +375,29 @@ fun ChatView(
                     item(key = "chat.awaiting") { AwaitingIndicatorRow() }
                 }
                 item(key = "chat.bottomSentinel") { Spacer(Modifier.height(1.dp)) }
+            }
+        }
+
+        // Find in conversation: Android's Cmd-F is a button floated at the transcript's top edge while the bar is
+        // not shown. A host's search channel presents the bar without it.
+        if (configuration.showFindBar && !store.find.isPresented) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                shadowElevation = 2.dp,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp)
+                    .clip(CircleShape)
+                    .clickable { store.presentFind() }
+                    .testTag("chat.findButton"),
+            ) {
+                Icon(
+                    Icons.Filled.Search,
+                    contentDescription = "Find in conversation",
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.padding(8.dp),
+                )
             }
         }
 

@@ -33,6 +33,8 @@ class ChatConfiguration(
     val submitOn: SubmitPolicy = SubmitPolicy.RETURN,
     val surfaces: Surfaces = Surfaces(),
     val readOnly: Boolean = false,
+    /** The transcript find bar and its button; a host-injected `search` query still highlights when off. */
+    val showFindBar: Boolean = true,
     val initialContentRaw: Any? = null,
     // Host-set fields (not parsed from the dictionary).
     var attachEnabled: Boolean = false,
@@ -174,6 +176,7 @@ class ChatConfiguration(
             )
 
             val readOnly = dictionary.boolOrNull("readOnly") ?: false
+            val showFindBar = dictionary.boolOrNull("showFindBar") ?: true
             // A pre-populated transcript in `content` - a preview / testing convenience only. Kept RAW so it is not
             // re-decoded on every view build; the store decodes it once at start.
             val initialContentRaw: Any? = dictionary["content"]
@@ -192,6 +195,7 @@ class ChatConfiguration(
                 submitOn = submitOn,
                 surfaces = surfaces,
                 readOnly = readOnly,
+                showFindBar = showFindBar,
                 initialContentRaw = initialContentRaw,
             )
         }

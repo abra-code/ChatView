@@ -34,8 +34,11 @@ object ToolDetailText {
         if (text.length <= cap) {
             return text
         }
+        // Back off one unit rather than splitting a surrogate pair, which would render as a replacement glyph. The
+        // Swift twin counts grapheme clusters and cannot hit this at all.
+        val end = if (text[cap - 1].isHighSurrogate()) cap - 1 else cap
         // U+2026 (horizontal ellipsis), built from its code point to keep this source ASCII-only.
         val ellipsis = String(Character.toChars(0x2026))
-        return text.take(cap) + "\n$ellipsis (truncated, ${text.length - cap} more characters)"
+        return text.take(end) + "\n$ellipsis (truncated, ${text.length - end} more characters)"
     }
 }

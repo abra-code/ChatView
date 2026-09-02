@@ -17,6 +17,11 @@ package com.abracode.chatview
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import com.abracode.richtext.rendering.RichTextHighlightStyle
+import com.abracode.richtext.rendering.RichTextHighlights
+import com.abracode.richtext.search.RichTextRange
+import com.abracode.richtext.search.RichTextSearchOptions
+import kotlin.time.Duration.Companion.milliseconds
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -52,6 +57,16 @@ fun interface Cancellable {
 interface ChatContentSource {
     fun observeChatContent(handler: (Any?) -> Unit): Cancellable
     fun observeChatConfig(handler: (Any?) -> Unit): Cancellable
+
+    /**
+     * Observes the search channel: a query String for the transcript find. A non-empty value runs the search,
+     * highlights the hits and (when the configuration enables the find bar) presents the bar with that query -
+     * without taking the keyboard focus, the reader being in the host's own field; "" dismisses it. null (the key
+     * never set) is no opinion. Because a states channel re-delivers its current value on EVERY states change, a
+     * value equal to the last one applied is ignored: the reader can close the bar without it springing back. To
+     * re-open with the same term, set "" and then the term again. Defaulted to a channel that never delivers.
+     */
+    fun observeChatSearch(handler: (Any?) -> Unit): Cancellable = Cancellable { }
 }
 
 /** How a restored transcript relates to the agent's conversational context (the transient "prime" directive). */
@@ -127,6 +142,15 @@ internal class ChatStore(
     // Session transcript seam: restore-in + incremental per-entry persistence.
     private var lastLoadedContent: ChatTranscript? = null
     private var contentCancellable: Cancellable? = null
+    private var searchCancellable: Cancellable? = null
+
+    // Transcript find: the bar's state (query, hits, cursor). Recomputed when the query changes and when the
+    // FINDABLE text of the transcript changes - never per streaming delta (see refreshFindIfNeeded).
+    var find by mutableStateOf(ChatFindState()); private set
+    private val findTextCache = ChatSearchTextCache()
+    private var findItemsSnapshot: List<ChatItem> = emptyList()
+    private var lastAppliedSearchQuery: String? = null
+    private var lastRejectedSearchValue: String? = null
     private var entrySequence = 0
     private var lastPrimeDirective: ChatPrimeDirective = ChatPrimeDirective.RESUME
 
@@ -194,6 +218,14 @@ internal class ChatStore(
         if (contentCancellable == null) {
             contentSource?.let { source ->
                 contentCancellable = source.observeChatContent { newContent -> reconcileRestoredContent(newContent) }
+            }
+        }
+
+        // The search channel: a host's query for the transcript find. Subscribed in readOnly too - a history
+        // viewer opened from a filtered list is the main reason it exists.
+        if (searchCancellable == null) {
+            contentSource?.let { source ->
+                searchCancellable = source.observeChatSearch { value -> reconcileSearchQuery(value) }
             }
         }
 
@@ -369,6 +401,7 @@ internal class ChatStore(
         val message = ChatMessage(id = itemID, role = ChatRole.LOCAL, text = text, isStreaming = false,
             status = status, replyTo = replyRef)
         _items.add(ChatItem.Message(message))
+        refreshFindIfNeeded()
         emit(ChatHostEvent.Send)
         emit(ChatHostEvent.MessageFinalized)
         fireEntry("message", itemID) { itemElement(ChatItem.Message(message)) }
@@ -564,6 +597,8 @@ internal class ChatStore(
         eventJob = null
         contentCancellable?.cancel()
         contentCancellable = null
+        searchCancellable?.cancel()
+        searchCancellable = null
         configCancellable?.cancel()
         configCancellable = null
         streamBuffers.clear()
@@ -586,7 +621,130 @@ internal class ChatStore(
     // MARK: - Router (pre-filter): ChatEvent -> store mutation
 
     // Internal (not private) so tests can drive the reduction directly.
+    // --- Find (transcript search). ---
+
+    /**
+     * Set the query. With [debounce] > 0 (the bar, per keystroke) the query is published at once so the field
+     * stays responsive, and the search itself runs once typing pauses; a host's channel and the tests pass zero and
+     * get the hits immediately.
+     */
+    fun setFindQuery(query: String, debounce: Duration = Duration.ZERO) {
+        if (find.query == query) return
+        find = find.copy(query = query)
+        if (debounce > Duration.ZERO) {
+            scheduler.schedule(findQueryDebounceKey, debounce) { recomputeFind() }
+        } else {
+            scheduler.cancel(findQueryDebounceKey)
+            recomputeFind()
+        }
+    }
+
+    fun setFindOptions(options: RichTextSearchOptions) {
+        if (find.options == options) return
+        find = find.copy(options = options)
+        recomputeFind()
+    }
+
+    fun setFindScope(scope: Set<ChatSearchScope>) {
+        if (find.scope == scope) return
+        find = find.copy(scope = scope)
+        recomputeFind()
+    }
+
+    fun findNext() {
+        find = find.stepped(1)
+    }
+
+    fun findPrevious() {
+        find = find.stepped(-1)
+    }
+
+    /**
+     * Show the bar. With [focus] (the reader's own gesture) its field takes focus, again if the bar is already
+     * open; without it (a host's search channel) the bar appears and focus stays where the reader is typing.
+     */
+    fun presentFind(focus: Boolean = true) {
+        find = find.copy(isPresented = true, focusRequests = if (focus) find.focusRequests + 1 else find.focusRequests)
+    }
+
+    /** The bar took the focus `focusRequests` asked for. */
+    fun markFindFocusHonored() {
+        find = find.copy(focusHonored = find.focusRequests)
+    }
+
+    /** Hide the bar and clear the query, so nothing stays painted. */
+    fun dismissFind() {
+        find = find.copy(isPresented = false)
+        setFindQuery("")
+    }
+
+    /**
+     * The search channel's value: a query String ("" dismisses; null is no opinion). A non-empty query runs and
+     * presents the bar (without focus) when the configuration has one; with `find` off it only highlights. A value
+     * equal to the last one applied is ignored - the channel re-delivers on every states change.
+     */
+    private fun reconcileSearchQuery(value: Any?) {
+        if (value == null) return
+        val query = value as? String
+        if (query == null) {
+            val description = value.toString()
+            if (description != lastRejectedSearchValue) {
+                lastRejectedSearchValue = description
+                logger.log("Chat search value is not a String; ignoring", ChatLogLevel.WARNING)
+            }
+            return
+        }
+        if (query == lastAppliedSearchQuery) return
+        lastAppliedSearchQuery = query
+        if (query.isBlank()) {
+            if (find.isPresented || find.query.isNotEmpty()) dismissFind()
+            return
+        }
+        setFindQuery(query)
+        if (config.showFindBar) presentFind(focus = false)
+    }
+
+    private fun recomputeFind() {
+        findItemsSnapshot = _items.toList()
+        findTextCache.retain(findItemsSnapshot.mapTo(HashSet()) { it.id })
+        val hits = ChatSearch.matches(findItemsSnapshot, find.query, find.options, find.scope, findTextCache)
+        find = find.withHits(hits)
+    }
+
+    /**
+     * Called after every change to `items`. Re-searches only when the text the search looks at changed. Most items
+     * are untouched between two snapshots and compare equal by identity, so the common streaming delta costs one
+     * pass of reference compares; a changed item is asked for its searchable fields, and a streaming message or a
+     * running tool call has none, so a delta on one never re-runs the search - the item is searched when it settles.
+     */
+    private fun refreshFindIfNeeded() {
+        if (find.query.isEmpty()) return
+        val previous = findItemsSnapshot
+        if (!findableTextChanged(previous, _items)) return
+        recomputeFind()
+    }
+
+    private fun findableTextChanged(old: List<ChatItem>, new: List<ChatItem>): Boolean {
+        if (old.size != new.size) return true
+        for (i in old.indices) {
+            val before = old[i]
+            val after = new[i]
+            if (before === after || before == after) continue
+            // A re-keyed item (the server confirming an optimistic message's id) keeps its text and loses its
+            // hits, which are stored by id.
+            if (before.id != after.id) return true
+            if (ChatSearch.searchableFields(before, find.scope) != ChatSearch.searchableFields(after, find.scope)) return true
+        }
+        return false
+    }
+
+    /** Routes one transport event onto the transcript, then re-searches if the findable text changed. */
     fun route(event: ChatEvent) {
+        routeEvent(event)
+        refreshFindIfNeeded()
+    }
+
+    private fun routeEvent(event: ChatEvent) {
         when (event) {
             is ChatEvent.SessionReady -> {
                 configOptions = event.configOptions
@@ -919,6 +1077,8 @@ internal class ChatStore(
             )
         }
         val turnWasInFlight = isStreaming || awaitingReply
+        // A conversation replaced wholesale: rendered bodies of the old one are dead weight.
+        findTextCache.removeAll()
         _items.clear()
         _items.addAll(transcript.items)
         transcriptGeneration += 1
@@ -948,6 +1108,7 @@ internal class ChatStore(
         }
         // Seed the transport's wire history from the loaded transcript (P0-2 continue-in). No-op if not built yet.
         primeTransportFromItems()
+        refreshFindIfNeeded()
     }
 
     /**
@@ -1043,6 +1204,7 @@ internal class ChatStore(
                 mutateStreamingText(index) { it.copy(text = text) }
             }
         }
+        refreshFindIfNeeded()
     }
 
     /** Context bookkeeping at turn end (see the Swift source for the full rationale). */
@@ -1395,6 +1557,9 @@ internal class ChatStore(
     private val typingThrottleMillis = 4_000L        // minimum gap between outgoing setTyping(true) signals
 
     companion object {
+        /** The bar's typing pause before the transcript is searched (see setFindQuery). */
+        val findTypingDebounce: Duration = 150.milliseconds
+        private const val findQueryDebounceKey = "find.query"
         private const val readMarkKey = "readmark"
         private fun typingExpiryKey(senderKey: String) = "typing.expire.$senderKey"
     }
@@ -1422,3 +1587,90 @@ private fun sortJsonElement(element: JsonElement): JsonElement = when (element) 
 // Double still renders as `1.0` here vs Swift's `1` - the documented cross-language number-format divergence.
 private fun canonicalEntryJson(element: JsonElement): String =
     Json.Default.encodeToString(JsonElement.serializer(), element).replace("/", "\\/")
+
+// --- Find (transcript search). Port of the Find section of ChatStore.swift. -------------------------------------
+
+/**
+ * The transcript find bar's state. The store owns and recomputes it; the transcript renders it and hands each row
+ * the ranges that belong to it. [hits] are in transcript order, so next / previous walk the conversation top to
+ * bottom regardless of which item a hit is in.
+ */
+data class ChatFindState(
+    val query: String = "",
+    val options: RichTextSearchOptions = RichTextSearchOptions.Default,
+    val scope: Set<ChatSearchScope> = ChatSearchScope.Default,
+    /** Whether the bar is shown. Independent of [query]: a host query with the bar disabled highlights without it. */
+    val isPresented: Boolean = false,
+    /**
+     * Bumped by every `presentFind(focus = true)`; the bar records the request it honored in [focusHonored], so a
+     * bar re-created later does not honor it twice and a host-driven present never takes focus.
+     */
+    val focusRequests: Int = 0,
+    val focusHonored: Int = 0,
+    val hits: List<ChatSearchHit> = emptyList(),
+    /** Index into [hits] of the hit the reader is on; null when there are none. */
+    val currentIndex: Int? = null,
+    /** Hit indices grouped by item, for the rows. */
+    val hitIndicesByItem: Map<String, List<Int>> = emptyMap(),
+) {
+    val current: ChatSearchHit? get() = currentIndex?.let { hits.getOrNull(it) }
+
+    /** "3 of 12", "No matches", or "" for an empty (or blank) query. */
+    val summary: String
+        get() {
+            if (query.isBlank()) return ""
+            val index = currentIndex ?: return "No matches"
+            if (hits.isEmpty()) return "No matches"
+            return "${index + 1} of ${hits.size}"
+        }
+
+    /**
+     * The ranges to paint in one field of one item, and which of them is the current hit (an index into the
+     * returned ranges, not into [hits]). null when the item has no hit in that field.
+     */
+    fun ranges(itemID: String, field: ChatSearchField): Pair<List<RichTextRange>, Int?>? {
+        val indices = hitIndicesByItem[itemID] ?: return null
+        val ranges = mutableListOf<RichTextRange>()
+        var current: Int? = null
+        for (index in indices) {
+            val hit = hits[index]
+            if (hit.field != field) continue
+            if (index == currentIndex) current = ranges.size
+            ranges.add(hit.range)
+        }
+        return if (ranges.isEmpty()) null else ranges to current
+    }
+
+    /** The same, as what `RichText(highlights = ...)` takes. */
+    fun highlights(itemID: String, field: ChatSearchField = ChatSearchField.BODY, style: RichTextHighlightStyle): RichTextHighlights? {
+        val (ranges, current) = ranges(itemID, field) ?: return null
+        return RichTextHighlights(ranges, current, style)
+    }
+
+    /**
+     * Replace the hits, keeping the reader on the hit they were on when it survived (the same item, field and
+     * range), or on the same place when only the item's id changed (the server confirming an optimistic message's
+     * id), and otherwise going back to the first.
+     */
+    internal fun withHits(newHits: List<ChatSearchHit>): ChatFindState {
+        val previous = current
+        val previousIndex = currentIndex
+        val byItem = HashMap<String, MutableList<Int>>()
+        newHits.forEachIndexed { index, hit -> byItem.getOrPut(hit.itemID) { mutableListOf() }.add(index) }
+        val kept = when {
+            newHits.isEmpty() -> null
+            previous != null && newHits.indexOf(previous) >= 0 -> newHits.indexOf(previous)
+            previous != null && previousIndex != null && previousIndex in newHits.indices &&
+                newHits[previousIndex].field == previous.field && newHits[previousIndex].range == previous.range -> previousIndex
+            else -> 0
+        }
+        return copy(hits = newHits, currentIndex = kept, hitIndicesByItem = byItem)
+    }
+
+    internal fun stepped(delta: Int): ChatFindState {
+        if (hits.isEmpty()) return this
+        val count = hits.size
+        val base = currentIndex ?: if (delta > 0) -1 else 0
+        return copy(currentIndex = ((base + delta) % count + count) % count)
+    }
+}

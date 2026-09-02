@@ -23,6 +23,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.abracode.chatview.CallEvent
@@ -314,4 +315,6 @@ internal class DualRowActions(
     val jumpTo: (String) -> Unit,
     val cancelTransfer: (String) -> Unit,
     val resend: (String) -> Unit,
+    /** The current find hit's bounds (window coordinates) from the row that holds it, for the transcript to scroll to. */
+    val onCurrentMatchBounds: (Rect?) -> Unit = {},
 )

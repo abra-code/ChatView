@@ -161,6 +161,19 @@ class FakeContentSource(seed: Any? = null, initialConfig: Any? = null) : ChatCon
             field = value
             configObservers.values.toList().forEach { it(value) }
         }
+    private val searchObservers = mutableMapOf<Int, (Any?) -> Unit>()
+    var search: Any? = null
+        set(value) {
+            field = value
+            searchObservers.values.toList().forEach { it(value) }
+        }
+
+    override fun observeChatSearch(handler: (Any?) -> Unit): Cancellable {
+        val id = nextId++
+        searchObservers[id] = handler
+        handler(search)
+        return Cancellable { searchObservers.remove(id) }
+    }
 
     override fun observeChatContent(handler: (Any?) -> Unit): Cancellable {
         val id = nextId++

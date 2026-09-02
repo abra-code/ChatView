@@ -59,6 +59,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -98,6 +99,7 @@ import com.abracode.chatview.MessageStatus
 import com.abracode.chatview.Reaction
 import com.abracode.chatview.ReplyRef
 import com.abracode.chatview.ToolCallModel
+import com.abracode.chatview.ToolDetailText
 import com.abracode.richtext.rendering.RichText
 import java.time.Instant
 
@@ -108,7 +110,7 @@ import java.time.Instant
  * (extra top gap at the start of a run). This is the single item composable the LazyColumn keys per id.
  */
 @Composable
-internal fun DualTranscriptRow(ctx: DualRowContext, actions: DualRowActions, highlighted: Boolean) {
+internal fun DualTranscriptRow(ctx: DualRowContext, actions: DualRowActions, highlighted: Boolean, find: RowFind = RowFind.None) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -120,26 +122,30 @@ internal fun DualTranscriptRow(ctx: DualRowContext, actions: DualRowActions, hig
             DaySeparatorRow(ts)
         }
         when (val item = ctx.item) {
-            is ChatItem.Message -> DualMessageRow(ctx, actions, item.message, highlighted)
+            is ChatItem.Message -> DualMessageRow(ctx, actions, item.message, highlighted, find)
             is ChatItem.Image -> DualImageRow(ctx, actions, item)
-            is ChatItem.File -> DualFileRow(ctx, actions, item.file)
+            is ChatItem.File -> DualFileRow(ctx, actions, item.file, find.fileName)
             is ChatItem.MemberEventItem ->
-                CenteredCaption(memberEventText(item.event), Icons.Filled.Group, MaterialTheme.colorScheme.onSurfaceVariant)
+                CenteredCaption(memberEventText(item.event), Icons.Filled.Group, MaterialTheme.colorScheme.onSurfaceVariant, find.caption)
             is ChatItem.CallEventItem -> {
                 val tint = if (item.event.isNegative()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                 val icon = if (item.event.isVideo == true) Icons.Filled.Videocam else Icons.Filled.Call
-                CenteredCaption(callEventText(item.event), icon, tint)
+                CenteredCaption(callEventText(item.event), icon, tint, find.caption)
             }
-            is ChatItem.System -> CenteredCaption(item.text, null, MaterialTheme.colorScheme.onSurfaceVariant)
-            is ChatItem.Error -> CenteredCaption(item.text, Icons.Filled.Warning, MaterialTheme.colorScheme.error)
+            is ChatItem.System -> CenteredCaption(item.text, null, MaterialTheme.colorScheme.onSurfaceVariant, find.caption)
+            is ChatItem.Error -> CenteredCaption(item.text, Icons.Filled.Warning, MaterialTheme.colorScheme.error, find.caption)
             is ChatItem.Thought -> ThoughtRow(
                 thought = item.thought,
                 initiallyExpanded = actions.config.surfaces.thoughts != ChatConfiguration.SurfaceMode.COLLAPSED,
+                find = find,
+                actions = actions,
             )
             is ChatItem.ToolCall -> ToolCallRow(
                 call = item.call,
                 compact = actions.config.surfaces.toolCalls == ChatConfiguration.SurfaceMode.COLLAPSED,
                 showsDiff = actions.config.surfaces.diffs != ChatConfiguration.SurfaceMode.HIDDEN,
+                find = find,
+                actions = actions,
             )
             // DRAWS NOTHING YET, ON PURPOSE. Decoding a session marker is what stops one destroying a whole
             // transcript, and that is this change; rendering it (Swift draws a centered caption, and an expandable
@@ -241,7 +247,7 @@ private fun DualRowScaffold(
 // --- Message. -------------------------------------------------------------------------------------------------
 
 @Composable
-private fun DualMessageRow(ctx: DualRowContext, actions: DualRowActions, msg: ChatMessage, highlighted: Boolean) {
+private fun DualMessageRow(ctx: DualRowContext, actions: DualRowActions, msg: ChatMessage, highlighted: Boolean, find: RowFind) {
     DualRowScaffold(
         ctx = ctx,
         actions = actions,
@@ -252,12 +258,12 @@ private fun DualMessageRow(ctx: DualRowContext, actions: DualRowActions, msg: Ch
         },
         caption = { MessageCaption(actions, msg, ctx.isSelf) },
     ) {
-        MessageBubble(ctx, actions, msg, highlighted)
+        MessageBubble(ctx, actions, msg, highlighted, find)
     }
 }
 
 @Composable
-private fun MessageBubble(ctx: DualRowContext, actions: DualRowActions, msg: ChatMessage, highlighted: Boolean) {
+private fun MessageBubble(ctx: DualRowContext, actions: DualRowActions, msg: ChatMessage, highlighted: Boolean, find: RowFind) {
     if (msg.deleted == true) {
         Text(
             "Message deleted",
@@ -295,7 +301,11 @@ private fun MessageBubble(ctx: DualRowContext, actions: DualRowActions, msg: Cha
         if (msg.text.isEmpty() && msg.isStreaming) {
             Text("...", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
-            RichText(markdown = msg.text)
+            RichText(
+                markdown = msg.text,
+                highlights = find.body,
+                onCurrentMatchBounds = if (find.isCurrent) actions.onCurrentMatchBounds else null,
+            )
         }
         MessageContextMenu(menuOpen, onDismiss = { menuOpen = false }, msg, ctx.isSelf, actions)
     }
@@ -500,7 +510,7 @@ private fun DualImageRow(ctx: DualRowContext, actions: DualRowActions, item: Cha
 // --- File + voice. --------------------------------------------------------------------------------------------
 
 @Composable
-private fun DualFileRow(ctx: DualRowContext, actions: DualRowActions, file: ChatFile) {
+private fun DualFileRow(ctx: DualRowContext, actions: DualRowActions, file: ChatFile, nameFind: PlainFind? = null) {
     // Swift's DualFileRow carries no timestamp / delivery caption (ChatDualTranscript.swift:442-447) - only the
     // sender label + bubble - so the scaffold gets no caption slot here.
     DualRowScaffold(
@@ -523,20 +533,20 @@ private fun DualFileRow(ctx: DualRowContext, actions: DualRowActions, file: Chat
             if (file.kind == ChatFile.Kind.VOICE) {
                 VoiceContent(file)
             } else {
-                FileContent(file, actions)
+                FileContent(file, actions, nameFind)
             }
         }
     }
 }
 
 @Composable
-private fun FileContent(file: ChatFile, actions: DualRowActions) {
+private fun FileContent(file: ChatFile, actions: DualRowActions, nameFind: PlainFind? = null) {
     val context = LocalContext.current
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Filled.InsertDriveFile, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
             Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                Text(file.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                ChatHighlightedText(file.name, nameFind, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
                     transferSubtitle(context, file),
                     style = MaterialTheme.typography.bodySmall,
@@ -610,7 +620,7 @@ private fun transferSubtitle(context: android.content.Context, file: ChatFile): 
 // --- Centered captions + day separator. -----------------------------------------------------------------------
 
 @Composable
-private fun CenteredCaption(caption: String, icon: androidx.compose.ui.graphics.vector.ImageVector?, tint: Color) {
+private fun CenteredCaption(caption: String, icon: androidx.compose.ui.graphics.vector.ImageVector?, tint: Color, find: PlainFind? = null) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -621,7 +631,7 @@ private fun CenteredCaption(caption: String, icon: androidx.compose.ui.graphics.
         if (icon != null) {
             Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
         }
-        Text(caption, style = MaterialTheme.typography.bodySmall, color = tint, textAlign = TextAlign.Center)
+        ChatHighlightedText(caption, find, style = MaterialTheme.typography.bodySmall, color = tint, textAlign = TextAlign.Center)
     }
 }
 
@@ -654,11 +664,14 @@ private fun DaySeparatorRow(timestamp: Instant) {
 
 /** The reasoning fold. Collapsed by default unless the document asks for inline thoughts. */
 @Composable
-private fun ThoughtRow(thought: ChatMessage, initiallyExpanded: Boolean) {
+private fun ThoughtRow(thought: ChatMessage, initiallyExpanded: Boolean, find: RowFind = RowFind.None, actions: DualRowActions? = null) {
     // rememberSaveable, not remember: a LazyColumn disposes rows outside its window, so a plain remember loses the
     // fold as soon as the reader scrolls past it - and loses every open fold on rotation. Keyed on the item id so a
     // recycled row never inherits another item's state.
     var expanded by rememberSaveable(thought.id) { mutableStateOf(initiallyExpanded) }
+    // The current find hit is inside this fold: open it, or the reader is scrolled to a closed disclosure. Runs on
+    // first composition too, for a lazy row materialized by the scroll to its hit.
+    LaunchedEffect(find.isCurrent) { if (find.isCurrent) expanded = true }
     Column(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -695,7 +708,11 @@ private fun ThoughtRow(thought: ChatMessage, initiallyExpanded: Boolean) {
                 if (thought.text.isEmpty() && thought.isStreaming) {
                     Text("...", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
-                    RichText(markdown = thought.text)
+                    RichText(
+                        markdown = thought.text,
+                        highlights = find.body,
+                        onCurrentMatchBounds = if (find.isCurrent) actions?.onCurrentMatchBounds else null,
+                    )
                 }
             }
         }
@@ -711,12 +728,14 @@ private fun ThoughtRow(thought: ChatMessage, initiallyExpanded: Boolean) {
  * "collapsed") additionally shrinks the card to a caption row.
  */
 @Composable
-private fun ToolCallRow(call: ToolCallModel, compact: Boolean, showsDiff: Boolean) {
+private fun ToolCallRow(call: ToolCallModel, compact: Boolean, showsDiff: Boolean, find: RowFind = RowFind.None, actions: DualRowActions? = null) {
     // rememberSaveable for the same reason as the thought fold: scrolling past an expanded card and back must not
     // re-collapse the output the reader was in the middle of.
     var expanded by rememberSaveable(call.id) { mutableStateOf(false) }
     val hasDetail = call.contentText.isNotEmpty() || (showsDiff && call.diff != null) ||
         call.rawInput != null || call.rawOutput != null
+    // The current find hit is in the folded detail: open the card so the reader lands on it (see ThoughtRow).
+    LaunchedEffect(find.isCurrent) { if (find.isCurrent && hasDetail && find.body?.currentRange != null) expanded = true }
 
     val body: @Composable () -> Unit = {
         Column(
@@ -748,8 +767,9 @@ private fun ToolCallRow(call: ToolCallModel, compact: Boolean, showsDiff: Boolea
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp),
                 )
-                Text(
+                ChatHighlightedText(
                     call.title,
+                    find.title,
                     style = if (compact) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
                     color = if (compact) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
                     maxLines = if (compact) 1 else 2,
@@ -764,7 +784,7 @@ private fun ToolCallRow(call: ToolCallModel, compact: Boolean, showsDiff: Boolea
                 ToolStatusIndicator(call.status)
             }
             if (expanded && hasDetail) {
-                ToolCallDetail(call, showsDiff)
+                ToolCallDetail(call, showsDiff, find, actions)
             }
         }
     }
@@ -786,13 +806,17 @@ private fun ToolCallRow(call: ToolCallModel, compact: Boolean, showsDiff: Boolea
 }
 
 @Composable
-private fun ToolCallDetail(call: ToolCallModel, showsDiff: Boolean) {
+private fun ToolCallDetail(call: ToolCallModel, showsDiff: Boolean, find: RowFind = RowFind.None, actions: DualRowActions? = null) {
     Column(
         modifier = Modifier.fillMaxWidth().testTag("chat.toolCall.detail"),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         if (call.contentText.isNotEmpty()) {
-            RichText(markdown = cappedToolDetail(call.contentText))
+            RichText(
+                markdown = ToolDetailText.capped(call.contentText),
+                highlights = find.body,
+                onCurrentMatchBounds = if (find.isCurrent) actions?.onCurrentMatchBounds else null,
+            )
         }
         val diff = call.diff
         if (showsDiff && diff != null) {
@@ -803,10 +827,10 @@ private fun ToolCallDetail(call: ToolCallModel, showsDiff: Boolean) {
                 style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            CodeBlock(cappedToolDetail(diff.newText))
+            CodeBlock(ToolDetailText.capped(diff.newText))
         }
-        call.rawInput?.let { LabeledCode("Input", cappedToolDetail(it)) }
-        call.rawOutput?.let { LabeledCode("Output", cappedToolDetail(it)) }
+        call.rawInput?.let { LabeledCode("Input", ToolDetailText.capped(it)) }
+        call.rawOutput?.let { LabeledCode("Output", ToolDetailText.capped(it)) }
     }
 }
 
@@ -876,18 +900,6 @@ private fun ToolStatusIndicator(status: ToolCallModel.Status) {
 }
 
 /** Port of ToolDetailText.capped: a megabyte of tool output stays a card, not a scroll marathon. */
-private const val toolDetailCap = 4000
-
-private fun cappedToolDetail(text: String): String {
-    if (text.length <= toolDetailCap) {
-        return text
-    }
-    // Back off one unit rather than splitting a surrogate pair, which would render as a replacement glyph. The
-    // Swift twin counts grapheme clusters and cannot hit this at all.
-    val end = if (text[toolDetailCap - 1].isHighSurrogate()) toolDetailCap - 1 else toolDetailCap
-    return text.take(end) + "\n... (truncated, ${text.length - end} more characters)"
-}
-
 // --- Avatar. --------------------------------------------------------------------------------------------------
 
 @Composable
