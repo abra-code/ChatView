@@ -47,7 +47,7 @@ class ChatReplyContentTest {
 
     @Test
     fun imageItemExposesItsID() {
-        val item: ChatItem = ChatItem.Image(id = "x-image", role = ChatRole.AGENT, image = ChatImage(url = "https://example.test/i.png"))
+        val item: ChatItem = ChatItem.Image(ChatImageItem(id = "x-image", role = ChatRole.AGENT, image = ChatImage(url = "https://example.test/i.png")))
         assertEquals("x-image", item.id)
     }
 }

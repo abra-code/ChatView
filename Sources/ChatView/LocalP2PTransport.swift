@@ -172,6 +172,13 @@ final class LocalP2PTransport: ChatTransport, @unchecked Sendable {
         events.append(.messageReceived(peerMessage(id: "seed-2", text: "I found a great spot for lunch.",
                                                    daysAgo: 1, minute: 1,
                                                    reactions: [Reaction(emoji: "\u{1F44D}", count: 1, mine: true)])))
+        // A photo from the peer, with a reaction of ours on it.
+        if let picture = ChatReplyContent.sampleImage(seed: "lunch-spot") {
+            events.append(.imageAdded(ChatImageItem(id: "photo-1", role: .remote, senderID: peerID, senderName: peerName,
+                                                    timestamp: Self.stamp(daysAgo: 1, minute: 2),
+                                                    image: ChatImage(url: picture.url, alt: "The lunch spot", pixelSize: picture.pixelSize),
+                                                    reactions: [Reaction(emoji: "\u{2764}\u{FE0F}", count: 1, mine: true)])))
+        }
         events.append(.messageReceived(ownMessage(id: "seed-3", text: "Yes! Sounds perfect.",
                                                   daysAgo: 0, minute: 0, status: .read)))
         events.append(.messageReceived(ownMessage(id: "seed-4", text: "Let me double-check the time.",

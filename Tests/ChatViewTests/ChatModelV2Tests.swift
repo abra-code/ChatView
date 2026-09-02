@@ -125,6 +125,23 @@ final class ChatModelV2RoundTripTests: XCTestCase {
         XCTAssertEqual(file.durationSeconds, 12)
     }
 
+    func testImageItemMetadataRoundTripsAndTheBareShapeStillDecodes() throws {
+        let photo = ChatItem.image(ChatImageItem(
+            id: "p1", role: .remote, senderID: "alex", senderName: "Alex", timestamp: "2026-07-10T12:00:00Z",
+            status: .read, image: ChatImage(url: URL(string: "https://example.test/p.jpg")!, alt: "pic"),
+            reactions: [Reaction(emoji: "\u{1F44D}", count: 1, mine: true)]))
+        let decoded = try JSONDecoder().decode(ChatItem.self, from: JSONEncoder().encode(photo))
+        XCTAssertEqual(decoded, photo)
+        // An agent's image (no sender, time, status or reactions) keeps the shape it always had: type, id,
+        // role and image, nothing else - so older readers and goldens see no change.
+        let bare = ChatItem.image(ChatImageItem(id: "i1", role: .agent, image: ChatImage(url: URL(string: "https://example.test/i.png")!)))
+        let keys = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(bare)) as? [String: Any]).keys
+        XCTAssertEqual(Set(keys), ["type", "id", "role", "image"])
+        let old = try JSONDecoder().decode(ChatItem.self, from: Data(
+            #"{"type":"image","id":"i1","role":"agent","image":{"url":"https://example.test/i.png","alt":""}}"#.utf8))
+        XCTAssertEqual(old, bare)
+    }
+
     func testFileReactionsRoundTripAndDefaultToNil() throws {
         let reacted = ChatFile(id: "f1", role: .remote, name: "a.pdf", transferStatus: .completed,
                                reactions: [Reaction(emoji: "\u{1F44D}", count: 2, mine: true)])

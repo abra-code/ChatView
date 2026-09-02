@@ -125,6 +125,18 @@ class ChatStoreV2RoutingTest {
     }
 
     @Test
+    fun imageAddedUpsertsAndTakesReactions() {
+        val store = makeStore()
+        store.route(ChatEvent.ImageAdded(ChatImageItem(id = "p1", role = ChatRole.REMOTE, senderID = "alex", image = ChatImage(url = "https://example.test/p.jpg", alt = "first"))))
+        store.route(ChatEvent.ImageAdded(ChatImageItem(id = "p1", role = ChatRole.REMOTE, senderID = "alex", image = ChatImage(url = "https://example.test/p.jpg", alt = "second"))))
+        assertEquals("a same-id imageAdded replaces in place", 1, store.items.size)
+        store.route(ChatEvent.ReactionsChanged(itemID = "p1", reactions = listOf(Reaction(emoji = thumbsUp, count = 1, mine = true))))
+        val photo = (store.items[0] as ChatItem.Image).item
+        assertEquals("second", photo.image.alt)
+        assertEquals(thumbsUp, photo.reactions?.firstOrNull()?.emoji)
+    }
+
+    @Test
     fun reactionsOnAFileMutateInPlace() {
         val store = makeStore()
         store.route(ChatEvent.FileAdded(ChatFile(id = "f1", role = ChatRole.REMOTE, name = "a.pdf", transferStatus = FileTransferStatus.COMPLETED)))

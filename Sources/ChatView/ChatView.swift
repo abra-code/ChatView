@@ -468,8 +468,8 @@ public struct ChatView: View {
                         showsDiff: config.surfaces.diffs != .hidden,
                         titleFind: store.find.ranges(for: call.id, field: .title),
                         detailHighlights: store.find.highlights(for: call.id, style: chatFindStyle))
-        case .image(_, let role, let image):
-            ImageRow(role: role, image: image, config: config)
+        case .image(let item):
+            ImageRow(role: item.role, image: item.image, config: config)
         case .system(let id, let text):
             ChatHighlightedText(text, find: store.find.ranges(for: id, field: .caption))
                 .font(.caption)
@@ -660,9 +660,9 @@ public struct ChatView: View {
             case .message(let message):
                 return ChatTranscriptLayout.Input(senderKey: senderKey(role: message.role, senderID: message.senderID),
                                                   groupable: true, timestamp: ChatTimestamp.parse(message.timestamp))
-            case .image(_, let role, _):
-                return ChatTranscriptLayout.Input(senderKey: senderKey(role: role, senderID: nil),
-                                                  groupable: true, timestamp: nil)
+            case .image(let item):
+                return ChatTranscriptLayout.Input(senderKey: senderKey(role: item.role, senderID: item.senderID),
+                                                  groupable: true, timestamp: ChatTimestamp.parse(item.timestamp))
             case .file(let file):
                 return ChatTranscriptLayout.Input(senderKey: senderKey(role: file.role, senderID: file.senderID),
                                                   groupable: true, timestamp: ChatTimestamp.parse(file.timestamp))
@@ -684,11 +684,12 @@ public struct ChatView: View {
                                   senderName: resolvedName(role: message.role, senderID: message.senderID, explicit: message.senderName),
                                   avatarURL: resolvedAvatar(senderID: message.senderID, explicit: message.avatarURL),
                                   timestamp: ChatTimestamp.parse(message.timestamp))
-        case .image(_, let role, _):
+        case .image(let image):
             return DualRowContext(id: item.id, item: item, info: info,
-                                  isSelf: isSelf(role: role, senderID: nil),
-                                  senderName: resolvedName(role: role, senderID: nil, explicit: nil),
-                                  avatarURL: nil, timestamp: nil)
+                                  isSelf: isSelf(role: image.role, senderID: image.senderID),
+                                  senderName: resolvedName(role: image.role, senderID: image.senderID, explicit: image.senderName),
+                                  avatarURL: resolvedAvatar(senderID: image.senderID, explicit: nil),
+                                  timestamp: ChatTimestamp.parse(image.timestamp))
         case .file(let file):
             return DualRowContext(id: item.id, item: item, info: info,
                                   isSelf: isSelf(role: file.role, senderID: file.senderID),

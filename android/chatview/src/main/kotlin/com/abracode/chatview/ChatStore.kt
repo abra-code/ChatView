@@ -912,9 +912,17 @@ internal class ChatStore(
             }
 
             is ChatEvent.Image -> {
-                _items.add(ChatItem.Image(id = event.itemID, role = event.role, image = event.image))
+                val item = ChatItem.Image(ChatImageItem(id = event.itemID, role = event.role, image = event.image))
+                _items.add(item)
                 emit(ChatHostEvent.MessageFinalized)
-                fireEntry("image", event.itemID) { itemElement(ChatItem.Image(id = event.itemID, role = event.role, image = event.image)) }
+                fireEntry("image", event.itemID) { itemElement(item) }
+            }
+
+            is ChatEvent.ImageAdded -> {
+                val existed = upsertImage(event.item)
+                emit(ChatHostEvent.MessageFinalized)
+                fireEntry("image", event.item.id, updated = existed) { itemElement(ChatItem.Image(event.item)) }
+                maybeScheduleReadMark()
             }
 
             is ChatEvent.System -> {
@@ -955,11 +963,11 @@ internal class ChatStore(
             }
 
             is ChatEvent.ReactionsChanged -> {
-                // A file / voice item carries reactions like a message does; the event is keyed by item id only.
-                if (item(event.itemID) is ChatItem.File) {
-                    mutateFile(event.itemID, fireEntry = true) { it.copy(reactions = event.reactions) }
-                } else {
-                    mutateMessage(event.itemID, "reactions") { it.copy(reactions = event.reactions) }
+                // A file / voice or image item carries reactions like a message does; the event is keyed by item id only.
+                when (item(event.itemID)) {
+                    is ChatItem.File -> mutateFile(event.itemID, fireEntry = true) { it.copy(reactions = event.reactions) }
+                    is ChatItem.Image -> mutateImage(event.itemID) { it.copy(reactions = event.reactions) }
+                    else -> mutateMessage(event.itemID, "reactions") { it.copy(reactions = event.reactions) }
                 }
             }
 
@@ -1299,6 +1307,21 @@ internal class ChatStore(
         return false
     }
 
+    /** Inserts an image item, or replaces one with the same id in place. Returns whether it existed. */
+    private fun upsertImage(item: ChatImageItem): Boolean {
+        val index = anyItemIndex(item.id)
+        if (index != null) {
+            if (items[index] is ChatItem.Image) {
+                _items[index] = ChatItem.Image(item)
+            } else {
+                logger.log("Chat imageAdded id '${item.id}' collides with a non-image item; ignoring", ChatLogLevel.VERBOSE)
+            }
+            return true
+        }
+        _items.add(ChatItem.Image(item))
+        return false
+    }
+
     /** Inserts a file item, or replaces one with the same id in place. Returns whether it existed. */
     private fun upsertFile(file: ChatFile): Boolean {
         val index = anyItemIndex(file.id)
@@ -1355,6 +1378,19 @@ internal class ChatStore(
         val updated = transform(message)
         _items[index] = ChatItem.Message(updated)
         fireEntry("message", id, updated = true) { itemElement(ChatItem.Message(updated.finalized())) }
+    }
+
+    /** Mutates an image item by id in place and re-fires its entry (an image has no per-tick updates). */
+    private fun mutateImage(id: String, transform: (ChatImageItem) -> ChatImageItem) {
+        val index = anyItemIndex(id)
+        val item = (items.getOrNull(index ?: -1) as? ChatItem.Image)?.item
+        if (index == null || item == null) {
+            logger.log("Chat image update for unknown image '$id'; ignoring", ChatLogLevel.VERBOSE)
+            return
+        }
+        val updated = transform(item)
+        _items[index] = ChatItem.Image(updated)
+        fireEntry("image", id, updated = true) { itemElement(ChatItem.Image(updated)) }
     }
 
     /** Mutates a file by id in place; re-fires its entry only when asked (a terminal transfer state, a reactions change), so per-tick progress does not spam the entry channel. */
@@ -1460,6 +1496,7 @@ internal class ChatStore(
             when (item) {
                 is ChatItem.Message -> if (!isSelfMessage(item.message)) return item.message.id
                 is ChatItem.File -> if (!isSelfFile(item.file)) return item.file.id
+                is ChatItem.Image -> if (!isSelfImage(item.item)) return item.item.id
                 else -> {}
             }
         }
@@ -1492,6 +1529,14 @@ internal class ChatStore(
         return participants.firstOrNull { it.id == senderID }?.isSelf == true
     }
 
+    private fun isSelfImage(item: ChatImageItem): Boolean {
+        if (item.role == ChatRole.LOCAL) {
+            return true
+        }
+        val senderID = item.senderID ?: return false
+        return participants.firstOrNull { it.id == senderID }?.isSelf == true
+    }
+
     private fun isSelfFile(file: ChatFile): Boolean {
         if (file.role == ChatRole.LOCAL) {
             return true
@@ -1519,6 +1564,7 @@ internal class ChatStore(
     private fun reactions(id: String): List<Reaction>? = when (val existing = item(id)) {
         is ChatItem.Message -> existing.message.reactions
         is ChatItem.File -> existing.file.reactions
+        is ChatItem.Image -> existing.item.reactions
         else -> null
     }
 

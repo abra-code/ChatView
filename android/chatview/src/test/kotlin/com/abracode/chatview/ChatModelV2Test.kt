@@ -10,6 +10,7 @@ package com.abracode.chatview
 // Emoji are written as \u escapes to keep the source ASCII (matching the Swift emitter's convention); the value
 // they round-trip is what matters, not the source spelling (U+1F44D thumbs-up, U+2764 U+FE0F heart).
 
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -156,6 +157,24 @@ class ChatModelV2Test {
         val file = (decoded as ChatItem.File).file
         assertEquals(ChatFile.Kind.VOICE, file.kind)
         assertEquals(12, file.durationSeconds)
+    }
+
+    @Test
+    fun imageItemMetadataRoundTripsAndTheBareShapeStillDecodes() {
+        val photo: ChatItem = ChatItem.Image(
+            ChatImageItem(
+                id = "p1", role = ChatRole.REMOTE, senderID = "alex", senderName = "Alex", timestamp = "2026-07-10T12:00:00Z",
+                status = MessageStatus.READ, image = ChatImage(url = "https://example.test/p.jpg", alt = "pic"),
+                reactions = listOf(Reaction(emoji = thumbsUp, count = 1, mine = true)),
+            ),
+        )
+        assertEquals(photo, roundTrip(ChatItem.serializer(), photo))
+        // An agent's image keeps the shape it always had: type, id, role and image, nothing else.
+        val bare: ChatItem = ChatItem.Image(ChatImageItem(id = "i1", role = ChatRole.AGENT, image = ChatImage(url = "https://example.test/i.png")))
+        val keys = chatJson.encodeToJsonElement(ChatItem.serializer(), bare).jsonObject.keys
+        assertEquals(setOf("type", "id", "role", "image"), keys)
+        val old = decodeItem("""{"type":"image","id":"i1","role":"agent","image":{"url":"https://example.test/i.png","alt":""}}""")
+        assertEquals(bare, old)
     }
 
     @Test

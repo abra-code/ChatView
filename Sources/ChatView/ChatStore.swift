@@ -1079,9 +1079,16 @@ final class ChatStore: ObservableObject {
             configOptions = options
 
         case .image(let itemID, let role, let image):
-            items.append(.image(id: itemID, role: role, image: image))
+            let item = ChatImageItem(id: itemID, role: role, image: image)
+            items.append(.image(item))
             emit(.messageFinalized)
-            fireEntry(type: "image", id: itemID, data: ChatItem.image(id: itemID, role: role, image: image))
+            fireEntry(type: "image", id: itemID, data: ChatItem.image(item))
+
+        case .imageAdded(let item):
+            let existed = upsertImage(item)
+            emit(.messageFinalized)
+            fireEntry(type: "image", id: item.id, data: ChatItem.image(item), updated: existed)
+            maybeScheduleReadMark()
 
         case .system(let text):
             localCounter += 1
@@ -1130,11 +1137,11 @@ final class ChatStore: ObservableObject {
             applyStatusWatermark(status: status, upTo: upToItemID)
 
         case .reactionsChanged(let itemID, let reactions):
-            // A file / voice item carries reactions like a message does; the event is keyed by item id only.
-            if case .file? = item(itemID) {
-                mutateFile(itemID, fireEntry: true) { $0.reactions = reactions }
-            } else {
-                mutateMessage(itemID, kind: "reactions") { $0.reactions = reactions }
+            // A file / voice or image item carries reactions like a message does; the event is keyed by item id only.
+            switch item(itemID) {
+            case .file?:  mutateFile(itemID, fireEntry: true) { $0.reactions = reactions }
+            case .image?: mutateImage(itemID) { $0.reactions = reactions }
+            default:      mutateMessage(itemID, kind: "reactions") { $0.reactions = reactions }
             }
 
         case .messageEdited(let itemID, let newText, let editedAt):
@@ -1913,6 +1920,20 @@ final class ChatStore: ObservableObject {
         return false
     }
 
+    /// Inserts an image item, or replaces one with the same id in place. Returns whether it existed.
+    private func upsertImage(_ item: ChatImageItem) -> Bool {
+        if let index = anyItemIndex(item.id) {
+            if case .image = items[index] {
+                items[index] = .image(item)
+            } else {
+                logger.log("Chat imageAdded id '\(item.id)' collides with a non-image item; ignoring", .verbose)
+            }
+            return true
+        }
+        items.append(.image(item))
+        return false
+    }
+
     /// Inserts a file item, or replaces one with the same id in place. Returns whether it existed.
     @discardableResult
     private func upsertFile(_ file: ChatFile) -> Bool {
@@ -1979,6 +2000,17 @@ final class ChatStore: ObservableObject {
         if fireOnTerminal {
             fireEntry(type: "file", id: id, data: ChatItem.file(file), updated: true)
         }
+    }
+
+    /// Mutates an image item by id in place and re-fires its entry (an image has no per-tick updates).
+    private func mutateImage(_ id: String, _ transform: (inout ChatImageItem) -> Void) {
+        guard let index = anyItemIndex(id), case .image(var item) = items[index] else {
+            logger.log("Chat image update for unknown image '\(id)'; ignoring", .verbose)
+            return
+        }
+        transform(&item)
+        items[index] = .image(item)
+        fireEntry(type: "image", id: id, data: ChatItem.image(item), updated: true)
     }
 
     /// Applies a delivery/read watermark: every OWN message at or before `upToItemID` that carries a
@@ -2076,6 +2108,7 @@ final class ChatStore: ObservableObject {
             switch item {
             case .message(let message) where !isSelfMessage(message): return message.id
             case .file(let file) where !isSelfFile(file):             return file.id
+            case .image(let image) where !isSelfImage(image):         return image.id
             default:                                                  continue
             }
         }
@@ -2110,6 +2143,16 @@ final class ChatStore: ObservableObject {
         return false
     }
 
+    private func isSelfImage(_ item: ChatImageItem) -> Bool {
+        if item.role == .local {
+            return true
+        }
+        if let senderID = item.senderID {
+            return participants.first(where: { $0.id == senderID })?.isSelf == true
+        }
+        return false
+    }
+
     private func isSelfFile(_ file: ChatFile) -> Bool {
         if file.role == .local {
             return true
@@ -2132,6 +2175,7 @@ final class ChatStore: ObservableObject {
         switch item(id) {
         case .message(let message)?: return message.reactions
         case .file(let file)?:       return file.reactions
+        case .image(let item)?:      return item.reactions
         default:                     return nil
         }
     }

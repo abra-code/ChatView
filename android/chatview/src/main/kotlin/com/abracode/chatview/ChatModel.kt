@@ -407,6 +407,26 @@ data class ChatFile(
     }
 }
 
+/**
+ * An image transcript ITEM: [ChatImage] (the picture) plus what a person-to-person photo carries beside it - who sent
+ * it, when, its delivery state and its reactions - the same identity and delivery fields a [ChatFile] has. An agent's
+ * image ([ChatEvent.Image]) fills only `id`, `role` and `image`; a photo in a person-to-person chat arrives whole
+ * through [ChatEvent.ImageAdded]. In a transcript its fields sit flat beside `type`, which is the shape image items
+ * have always had; the person-to-person fields are optional and omitted when null, so an agent's image encodes
+ * exactly as before. `reactions` is the aggregated emoji reaction set, replaced whole by ReactionsChanged.
+ */
+@Serializable
+data class ChatImageItem(
+    val id: String,
+    val role: ChatRole,
+    val senderID: String? = null,
+    val senderName: String? = null,
+    val timestamp: String? = null,
+    val status: MessageStatus? = null,
+    val image: ChatImage,
+    val reactions: List<Reaction>? = null,
+)
+
 /** A conversation participant (the group roster). `isSelf` marks the local user (used to derive dual alignment). */
 @Serializable
 data class Participant(
@@ -493,7 +513,9 @@ sealed class ChatItem {
         override val id: String get() = call.id
     }
 
-    data class Image(override val id: String, val role: ChatRole, val image: ChatImage) : ChatItem()
+    data class Image(val item: ChatImageItem) : ChatItem() {
+        override val id: String get() = item.id
+    }
 
     data class System(override val id: String, val text: String) : ChatItem()
 
@@ -537,10 +559,9 @@ internal object ChatItemSerializer : KSerializer<ChatItem> {
                     put("toolCall", json.encodeToJsonElement(value.call))
                 }
                 is ChatItem.Image -> {
+                    // The item's fields sit flat beside `type` (see ChatImageItem).
                     put("type", "image")
-                    put("id", value.id)
-                    put("role", json.encodeToJsonElement(value.role))
-                    put("image", json.encodeToJsonElement(value.image))
+                    json.encodeToJsonElement(value.item).jsonObject.forEach { (key, element) -> put(key, element) }
                 }
                 is ChatItem.System -> {
                     put("type", "system")
@@ -588,11 +609,7 @@ internal object ChatItemSerializer : KSerializer<ChatItem> {
             "message" -> ChatItem.Message(field("message") { json.decodeFromJsonElement(it) })
             "thought" -> ChatItem.Thought(field("message") { json.decodeFromJsonElement(it) })
             "toolCall" -> ChatItem.ToolCall(field("toolCall") { json.decodeFromJsonElement(it) })
-            "image" -> ChatItem.Image(
-                id = string("id"),
-                role = field("role") { json.decodeFromJsonElement(it) },
-                image = field("image") { json.decodeFromJsonElement(it) },
-            )
+            "image" -> ChatItem.Image(json.decodeFromJsonElement(JsonObject(obj.filterKeys { it != "type" })))
             "system" -> ChatItem.System(id = string("id"), text = string("text"))
             "error" -> ChatItem.Error(id = string("id"), text = string("text"))
             "memberEvent" -> ChatItem.MemberEventItem(field("memberEvent") { json.decodeFromJsonElement(it) })
@@ -835,7 +852,11 @@ sealed interface ChatEvent {
     data class CurrentModeChanged(val modeID: String) : ChatEvent
     data class CommandsAvailable(val commands: List<SlashCommand>) : ChatEvent
     data class ConfigOptionsChanged(val options: List<SessionConfigOption>) : ChatEvent
+    /** A standalone image element (an agent's: no sender / time). */
     data class Image(val itemID: String, val role: ChatRole, val image: ChatImage) : ChatEvent
+
+    /** Insert / upsert a photo item by id, with its sender, time, status and reactions. */
+    data class ImageAdded(val item: ChatImageItem) : ChatEvent
     data class System(val text: String) : ChatEvent
     data class Error(val message: String, val recoverable: Boolean) : ChatEvent
 

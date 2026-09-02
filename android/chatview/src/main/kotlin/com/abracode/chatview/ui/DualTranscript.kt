@@ -516,18 +516,49 @@ private fun ReplyQuote(ref: ReplyRef, onClick: () -> Unit) {
 
 @Composable
 private fun DualImageRow(ctx: DualRowContext, actions: DualRowActions, item: ChatItem.Image) {
-    DualRowScaffold(ctx = ctx, actions = actions) {
+    // A photo takes reactions like a message bubble: the same badge on its corner and the same quick-reaction
+    // row on long press, attached only when reactions are on (as on the file row). No caption row yet, like the
+    // file row.
+    val photo = item.item
+    DualRowScaffold(
+        ctx = ctx,
+        actions = actions,
+        reactions = if (actions.canReact && !photo.reactions.isNullOrEmpty()) {
+            { ReactionChips(photo.reactions!!, photo.id, actions) }
+        } else {
+            null
+        },
+    ) {
         val frameMax = minOf(actions.maxBubbleWidth, 280.dp)
-        val intrinsic = item.image.pixelSize?.let { Size(it.width.toFloat(), it.height.toFloat()) }
-        CachedImage(
-            url = item.image.url,
-            modifier = Modifier.widthIn(max = frameMax),
-            intrinsicSize = intrinsic,
-            cornerRadius = 12.dp,
-            contentMode = ContentMode.Fill,
-            maxPixelWidth = actions.maxBubbleWidth.value * 3f,
-            contentDescription = item.image.alt.ifEmpty { "Image" },
-        )
+        val intrinsic = photo.image.pixelSize?.let { Size(it.width.toFloat(), it.height.toFloat()) }
+        var menuOpen by remember { mutableStateOf(false) }
+        Box(
+            modifier = Modifier
+                .widthIn(max = frameMax)
+                .clip(RoundedCornerShape(12.dp))
+                .then(
+                    if (actions.canReact) {
+                        Modifier.combinedClickable(onClick = {}, onLongClick = { menuOpen = true })
+                    } else {
+                        Modifier
+                    },
+                ),
+        ) {
+            CachedImage(
+                url = photo.image.url,
+                modifier = Modifier.widthIn(max = frameMax),
+                intrinsicSize = intrinsic,
+                cornerRadius = 12.dp,
+                contentMode = ContentMode.Fill,
+                maxPixelWidth = actions.maxBubbleWidth.value * 3f,
+                contentDescription = photo.image.alt.ifEmpty { "Image" },
+            )
+            if (actions.canReact) {
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    QuickReactionRow(photo.id, actions, onDismiss = { menuOpen = false })
+                }
+            }
+        }
     }
 }
 

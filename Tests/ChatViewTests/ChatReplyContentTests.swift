@@ -44,7 +44,7 @@ final class ChatReplyContentTests: XCTestCase {
 
     func testImageItemExposesItsID() {
         let url = URL(string: "https://example.test/i.png")!
-        let item = ChatItem.image(id: "x-image", role: .agent, image: ChatImage(url: url))
+        let item = ChatItem.image(ChatImageItem(id: "x-image", role: .agent, image: ChatImage(url: url)))
         XCTAssertEqual(item.id, "x-image")
     }
 }

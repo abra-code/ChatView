@@ -273,6 +273,7 @@ object FixtureEventCodec {
             "error" -> ChatEvent.Error(str("message"), (obj["recoverable"] as? JsonPrimitive)?.booleanOrNull ?: false)
             "system" -> ChatEvent.System(str("text"))
             "image" -> ChatEvent.Image(str("itemID"), role("role"), model("image", ChatImage.serializer()))
+            "imageAdded" -> ChatEvent.ImageAdded(model("item", ChatImageItem.serializer()))
             "messageReceived" -> ChatEvent.MessageReceived(model("message", ChatMessage.serializer()))
             "messageIDConfirmed" -> ChatEvent.MessageIDConfirmed(str("localID"), str("serverID"))
             "messageStatusChanged" -> ChatEvent.MessageStatusChanged(

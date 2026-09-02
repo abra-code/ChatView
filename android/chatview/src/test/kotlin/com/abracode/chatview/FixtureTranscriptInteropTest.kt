@@ -4,12 +4,12 @@ package com.abracode.chatview
 // decode in Kotlin and re-encode to a SEMANTICALLY identical document, and the decode must be round-trip stable.
 //
 // - PRIMARY: assertJsonSemanticallyEqual (numeric-normalizing tree compare) against the Swift golden - applies to
-//   all four goldens. This tolerates the Swift-whole-Double vs Kotlin-800.0 rendering difference by design.
+//   every golden. This tolerates the Swift-whole-Double vs Kotlin-800.0 rendering difference by design.
 // - SECONDARY: round-trip stability (decode -> encode -> decode == first decode).
 // - STRICT (Double-free goldens only): canonical sorted-keys string equality, to catch key-spelling drift with byte
-//   precision. transcript-mixed-agentic carries Double-typed model fields (ChatImage pixels, UsageInfo cost), which
-//   Swift renders as `800` and Kotlin as `800.0`, so the strict check is applied to the other three goldens only
-//   (judged by model types per section 8; their ChatFile.progress / image pixels are absent, so no Double renders).
+//   precision. transcript-mixed-agentic (ChatImage pixels, UsageInfo cost) and the two P2P transcripts (the seeded
+//   photo's pixels) carry Double-typed model fields, which Swift renders as `800` and Kotlin as `800.0`, so the
+//   strict check is applied to the Double-free goldens only (judged by model types per section 8).
 
 import kotlinx.serialization.json.JsonElement
 import org.junit.Assert.assertEquals
@@ -19,8 +19,6 @@ class FixtureTranscriptInteropTest {
 
     private val doubleFreeGoldens = listOf(
         "transcript-v1-minimal.json",
-        "transcript-v2-people.json",
-        "transcript-v2-group.json",
         // The session-marker golden. Kotlin did not know `sessionEvent` at all, so every conversation the current
         // macOS host writes failed to decode here - and no other golden carries one, which is why the gate could not
         // see it. Double-free by construction, so it gets the strict canonical-string check.
@@ -28,6 +26,10 @@ class FixtureTranscriptInteropTest {
     )
     private val doubleBearingGoldens = listOf(
         "transcript-mixed-agentic.json",
+        // The P2P seed carries a photo with a pixelSize (Doubles) since the image-item change; scenario-19 keeps the
+        // strict check on ChatImageItem's keys.
+        "transcript-v2-people.json",
+        "transcript-v2-group.json",
     )
 
     private fun decode(text: String): ChatTranscript = chatJson.decodeFromString(ChatTranscript.serializer(), text)

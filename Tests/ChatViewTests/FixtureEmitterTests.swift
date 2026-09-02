@@ -127,6 +127,8 @@ private enum EventCodec {
             return ["event": "transientSystem", "text": text]
         case .image(let itemID, let role, let image):
             return ["event": "image", "itemID": itemID, "role": role.rawValue, "image": try jsonValue(image)]
+        case .imageAdded(let item):
+            return ["event": "imageAdded", "item": try jsonValue(item)]
 
         case .messageReceived(let message):
             return ["event": "messageReceived", "message": try jsonValue(message)]
@@ -254,6 +256,8 @@ private enum EventCodec {
         case "image":
             return .image(itemID: try str("itemID"), role: try role("role"),
                           image: try decodeModel(ChatImage.self, from: try sub("image")))
+        case "imageAdded":
+            return .imageAdded(try decodeModel(ChatImageItem.self, from: try sub("item")))
 
         case "messageReceived":
             return .messageReceived(try decodeModel(ChatMessage.self, from: try sub("message")))
@@ -438,6 +442,19 @@ private func allScenarios() -> [Scenario] {
                                      senderID: "me", timestamp: "2026-07-09T15:01:00Z")),
             ], hasMore: false),                                                               // prepended before cur1
         ]),
+        // Deliberately without a pixelSize (a Double), so the golden stays on the STRICT side of the interop gate
+        // and pins the spelling of every ChatImageItem key.
+        Scenario(name: "scenario-19-image-added", version: 2, events: [
+            .imageAdded(ChatImageItem(id: "p1", role: .remote, senderID: "alex", senderName: "Alex",
+                                      timestamp: "2026-07-10T15:00:00Z", status: .read,
+                                      image: ChatImage(url: URL(string: "https://example.test/lunch.jpg")!, alt: "The lunch spot"),
+                                      reactions: [Reaction(emoji: thumbsUp(), count: 1, mine: false)])),
+            .imageAdded(ChatImageItem(id: "p1", role: .remote, senderID: "alex", senderName: "Alex",
+                                      timestamp: "2026-07-10T15:00:00Z", status: .read,
+                                      image: ChatImage(url: URL(string: "https://example.test/lunch.jpg")!, alt: "The lunch spot, retitled"),
+                                      reactions: [Reaction(emoji: thumbsUp(), count: 1, mine: false)])),   // same id -> replace
+            .reactionsChanged(itemID: "p1", reactions: [Reaction(emoji: heart(), count: 2, mine: true)]),   // on an image
+        ]),
         Scenario(name: "scenario-18-connection", version: 2, events: [
             .connectionStateChanged(.connecting),
             .messageReceived(ChatMessage(id: "m1", role: .remote, text: "back online", isStreaming: false, senderID: "alex")),
@@ -574,9 +591,9 @@ final class FixtureEmitterTests: XCTestCase {
                                         contentText: "applied",
                                         diff: ToolCallDiff(path: "ChatModel.kt", oldText: "struct", newText: "data class"),
                                         rawInput: "{\"path\":\"ChatModel.kt\"}", rawOutput: "1 file changed")),
-                .image(id: "i1", role: .agent,
-                       image: ChatImage(url: URL(string: "https://example.test/diagram.png")!, alt: "architecture",
-                                        pixelSize: CGSize(width: 800, height: 600))),
+                .image(ChatImageItem(id: "i1", role: .agent,
+                                     image: ChatImage(url: URL(string: "https://example.test/diagram.png")!, alt: "architecture",
+                                                      pixelSize: CGSize(width: 800, height: 600)))),
                 .system(id: "s1", text: "Session started"),
                 .error(id: "e1", text: "transient hiccup"),
                 .memberEvent(MemberEvent(id: "mv1", timestamp: "2026-07-10T15:01:00Z", kind: .joined, subjectName: "Sam")),

@@ -234,6 +234,20 @@ final class ChatStoreV2RoutingTests: XCTestCase {
         XCTAssertEqual(cleared.reactions, [], "a file's reaction set is replaced whole, like a message's")
     }
 
+    func testImageAddedUpsertsAndTakesReactions() {
+        let store = makeStore()
+        let url = URL(string: "https://example.test/p.jpg")!
+        store.route(.imageAdded(ChatImageItem(id: "p1", role: .remote, senderID: "alex", timestamp: "2026-07-10T12:00:00Z",
+                                              image: ChatImage(url: url, alt: "first"))))
+        store.route(.imageAdded(ChatImageItem(id: "p1", role: .remote, senderID: "alex", timestamp: "2026-07-10T12:00:00Z",
+                                              image: ChatImage(url: url, alt: "second"))))
+        XCTAssertEqual(store.items.count, 1, "a same-id imageAdded replaces in place")
+        store.route(.reactionsChanged(itemID: "p1", reactions: [Reaction(emoji: "\u{1F44D}", count: 1, mine: true)]))
+        guard case .image(let photo) = store.items[0] else { return XCTFail() }
+        XCTAssertEqual(photo.image.alt, "second")
+        XCTAssertEqual(photo.reactions?.first?.emoji, "\u{1F44D}")
+    }
+
     func testTypingIndicatorExpiresOnTheVirtualClock() {
         let scheduler = ManualChatScheduler()
         let store = makeStore(scheduler: scheduler)
@@ -355,6 +369,26 @@ final class ChatStoreV2BehaviorTests: XCTestCase {
         XCTAssertEqual(sink.all().count, 1)
         if case .markRead(let upTo) = sink.all().first {
             XCTAssertEqual(upTo, "r1")
+        } else {
+            XCTFail("expected markRead")
+        }
+    }
+
+    func testReadMarkTargetsAnIncomingPhoto() async {
+        let scheduler = ManualChatScheduler()
+        let (store, sink) = makeStarted(scheduler: scheduler)
+        store.setPinnedToBottom(true)
+        store.setSceneActive(true)
+        store.route(.messageReceived(remote("r1")))
+        scheduler.advance(by: 2)
+        await settle()
+        store.route(.imageAdded(ChatImageItem(id: "p1", role: .remote, senderID: "alex",
+                                              image: ChatImage(url: URL(string: "https://example.test/p.jpg")!))))
+        scheduler.advance(by: 2)
+        await settle()
+        XCTAssertEqual(sink.all().count, 2, "a peer's photo after a read-marked message is read-marked too")
+        if case .markRead(let upTo)? = sink.all().last {
+            XCTAssertEqual(upTo, "p1")
         } else {
             XCTFail("expected markRead")
         }
@@ -485,6 +519,19 @@ final class ChatStoreV2BehaviorTests: XCTestCase {
         XCTAssertEqual(id, "f1")
         XCTAssertEqual(emoji, "\u{1F44D}")
         XCTAssertFalse(add, "an existing own reaction on a file -> remove")
+    }
+
+    func testToggleReactionOnAnImageDerivesAddFromItsOwnReactions() async {
+        let (store, sink) = makeStarted(features: ["features": ["reactions": true]], capabilities: allCaps())
+        store.route(.imageAdded(ChatImageItem(id: "p1", role: .remote, image: ChatImage(url: URL(string: "https://example.test/p.jpg")!),
+                                              reactions: [Reaction(emoji: "\u{1F44D}", count: 1, mine: true)])))
+        store.toggleReaction(itemID: "p1", emoji: "\u{1F44D}")
+        await settle()
+        guard case .toggleReaction(let id, _, let add)? = sink.all().first else {
+            return XCTFail("expected toggleReaction")
+        }
+        XCTAssertEqual(id, "p1")
+        XCTAssertFalse(add, "an existing own reaction on an image -> remove")
     }
 
     func testResendAlsoRetriesAFailedFileTransfer() async {

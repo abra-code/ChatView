@@ -224,8 +224,10 @@ internal fun groupingSignature(item: ChatItem, participants: List<Participant>):
             val f = item.file
             GroupingSignature(senderKey(isSelfAuthor(f.role, f.senderID, participants), f.senderID, f.role), true, f.timestamp)
         }
-        is ChatItem.Image ->
-            GroupingSignature(senderKey(isSelfAuthor(item.role, null, participants), null, item.role), true, null)
+        is ChatItem.Image -> {
+            val i = item.item
+            GroupingSignature(senderKey(isSelfAuthor(i.role, i.senderID, participants), i.senderID, i.role), true, i.timestamp)
+        }
         is ChatItem.MemberEventItem -> GroupingSignature("system", false, item.event.timestamp)
         is ChatItem.CallEventItem -> GroupingSignature("system", false, item.event.timestamp)
         is ChatItem.System -> GroupingSignature("system", false, null)
@@ -270,11 +272,16 @@ internal fun buildRowContext(
             timestamp = ChatTimestamp.parse(f.timestamp),
         )
     }
-    is ChatItem.Image -> DualRowContext(
-        id = item.id, item = item, info = info,
-        isSelf = isSelfAuthor(item.role, null, participants),
-        senderName = null, avatarURL = null, timestamp = null,
-    )
+    is ChatItem.Image -> {
+        val i = item.item
+        DualRowContext(
+            id = item.id, item = item, info = info,
+            isSelf = isSelfAuthor(i.role, i.senderID, participants),
+            senderName = resolveName(i.senderName, i.senderID, i.role, participants, config),
+            avatarURL = participantAvatar(i.senderID, participants),
+            timestamp = ChatTimestamp.parse(i.timestamp),
+        )
+    }
     is ChatItem.MemberEventItem -> DualRowContext(
         id = item.id, item = item, info = info, isSelf = false,
         senderName = null, avatarURL = null, timestamp = ChatTimestamp.parse(item.event.timestamp),

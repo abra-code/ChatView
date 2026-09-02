@@ -93,6 +93,23 @@ class ChatStoreV2BehaviorTest {
     }
 
     @Test
+    fun readMarkTargetsAnIncomingPhoto() = runTest {
+        val scheduler = ManualChatScheduler()
+        val (store, sink) = makeStarted(scheduler = scheduler)
+        store.setPinnedToBottom(true)
+        store.setSceneActive(true)
+        store.route(ChatEvent.MessageReceived(remote("r1")))
+        scheduler.advance(2.seconds)
+        advanceUntilIdle()
+        store.route(ChatEvent.ImageAdded(ChatImageItem(id = "p1", role = ChatRole.REMOTE, senderID = "alex", image = ChatImage(url = "https://example.test/p.jpg"))))
+        scheduler.advance(2.seconds)
+        advanceUntilIdle()
+        assertEquals("a peer's photo after a read-marked message is read-marked too", 2, sink.all().size)
+        val last = sink.all().last()
+        assertTrue(last is ChatCommand.MarkRead && last.upToItemID == "p1")
+    }
+
+    @Test
     fun readMarkSuppressedWhenNotPinned() = runTest {
         val scheduler = ManualChatScheduler()
         val (store, sink) = makeStarted(scheduler = scheduler)
@@ -182,6 +199,29 @@ class ChatStoreV2BehaviorTest {
         assertEquals("m1", cmd.itemID)
         assertEquals(thumbsUp, cmd.emoji)
         assertTrue("no existing reaction -> add", cmd.add)
+    }
+
+    @Test
+    fun toggleReactionOnAnImageDerivesAddFromItsOwnReactions() = runTest {
+        val (store, sink) = makeStarted(
+            features = buildJsonObject { putJsonObject("features") { put("reactions", true) } },
+            capabilities = allCaps(),
+        )
+        store.route(
+            ChatEvent.ImageAdded(
+                ChatImageItem(
+                    id = "p1", role = ChatRole.REMOTE, image = ChatImage(url = "https://example.test/p.jpg"),
+                    reactions = listOf(Reaction(emoji = thumbsUp, count = 1, mine = true)),
+                ),
+            ),
+        )
+        store.toggleReaction("p1", thumbsUp)
+        advanceUntilIdle()
+        val cmd = sink.all().firstOrNull()
+        assertTrue(cmd is ChatCommand.ToggleReaction)
+        cmd as ChatCommand.ToggleReaction
+        assertEquals("p1", cmd.itemID)
+        assertFalse("an existing own reaction on an image -> remove", cmd.add)
     }
 
     @Test

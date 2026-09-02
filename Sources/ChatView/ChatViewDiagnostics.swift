@@ -57,8 +57,8 @@ enum ChatViewDiagnostics {
             return "thought(len=\(thought.text.count)\(thought.isStreaming ? " streaming" : ""))"
         case .toolCall(let call):
             return "toolCall(\(call.title))"
-        case .image(_, let role, _):
-            return "image(\(role))"
+        case .image(let item):
+            return "image(\(item.role))"
         case .system:
             return "system"
         case .error:

@@ -77,9 +77,10 @@ struct DualTranscriptRow: View {
             DualMessageRow(ctx: ctx, message: message, config: config, maxBubbleWidth: maxBubbleWidth,
                            showsSenderNames: showsSenderNames, actions: actions, highlighted: highlighted,
                            highlights: highlights, onResend: onResend)
-        case .image(_, let role, let image):
+        case .image(let item):
             // An image is a leading/trailing bubble too; reuse the shared image view inside the gutter frame.
-            DualImageRow(ctx: ctx, role: role, image: image, config: config, maxBubbleWidth: maxBubbleWidth)
+            DualImageRow(ctx: ctx, item: item, config: config, maxBubbleWidth: maxBubbleWidth,
+                         showsSenderNames: showsSenderNames, actions: actions)
         case .file(let file):
             DualFileRow(ctx: ctx, file: file, config: config, maxBubbleWidth: maxBubbleWidth,
                         showsSenderNames: showsSenderNames, actions: actions, audio: audio,
@@ -424,14 +425,19 @@ private struct DualMessageRow: View {
 
 // MARK: - Image row (dual)
 
+/// A photo (or an agent's image) aligned like a message bubble: the sender label (first of an incoming run),
+/// the picture, and the same reaction badge and React entry a message bubble has, gated the same way. No
+/// caption row yet, like the file row.
 private struct DualImageRow: View {
     let ctx: DualRowContext
-    let role: ChatRole
-    let image: ChatImage
+    let item: ChatImageItem
     let config: ChatConfiguration
     let maxBubbleWidth: CGFloat
+    let showsSenderNames: Bool
+    let actions: DualRowActions
 
     private var isSelf: Bool { ctx.isSelf }
+    private var image: ChatImage { item.image }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 6) {
@@ -444,15 +450,39 @@ private struct DualImageRow: View {
                     Color.clear.frame(width: 28, height: 1)
                 }
             }
-            CachedImage(url: image.url, intrinsicSize: image.pixelSize, cornerRadius: 12,
-                        maxPixelWidth: maxBubbleWidth * 3)
-                .frame(maxWidth: min(maxBubbleWidth, 280), alignment: isSelf ? .trailing : .leading)
-                .accessibilityLabel(image.alt.isEmpty ? Text("Image") : Text(image.alt))
+            VStack(alignment: isSelf ? .trailing : .leading, spacing: 2) {
+                if !isSelf, ctx.info.isFirstInRun, showsSenderNames, let name = ctx.senderName, !name.isEmpty {
+                    Text(name).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 4)
+                }
+                reactablePicture
+            }
+            .frame(maxWidth: maxBubbleWidth, alignment: isSelf ? .trailing : .leading)
             if !isSelf {
                 Spacer(minLength: 40)
             }
         }
         .frame(maxWidth: .infinity, alignment: isSelf ? .trailing : .leading)
+    }
+
+    // The badge and the menu are applied to the picture's own frame (capped like a bubble), so the badge pins
+    // to the picture's corner. The menu is attached only when reactions are on, as on the file row.
+    @ViewBuilder
+    private var reactablePicture: some View {
+        let badged = picture.reactionBadge(actions.canReact ? item.reactions : nil, isSelf: isSelf) { emoji in
+            actions.toggleReaction(item.id, emoji)
+        }
+        if actions.canReact {
+            badged.contextMenu { QuickReactionMenu(itemID: item.id, toggle: actions.toggleReaction) }
+        } else {
+            badged
+        }
+    }
+
+    private var picture: some View {
+        CachedImage(url: image.url, intrinsicSize: image.pixelSize, cornerRadius: 12,
+                    maxPixelWidth: maxBubbleWidth * 3)
+            .frame(maxWidth: min(maxBubbleWidth, 280), alignment: isSelf ? .trailing : .leading)
+            .accessibilityLabel(image.alt.isEmpty ? Text("Image") : Text(image.alt))
     }
 }
 

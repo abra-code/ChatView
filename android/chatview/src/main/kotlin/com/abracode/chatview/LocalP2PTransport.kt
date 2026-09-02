@@ -181,6 +181,19 @@ class LocalP2PTransport(
                 ),
             ),
         )
+        // A photo from the peer, with a reaction of ours on it.
+        ChatReplyContent.sampleImage("lunch-spot")?.let { picture ->
+            events.add(
+                ChatEvent.ImageAdded(
+                    ChatImageItem(
+                        id = "photo-1", role = ChatRole.REMOTE, senderID = peerID, senderName = peerName,
+                        timestamp = stamp(daysAgo = 1, minute = 2),
+                        image = ChatImage(url = picture.url, alt = "The lunch spot", pixelSize = picture.pixelSize),
+                        reactions = listOf(Reaction(emoji = "\u2764\uFE0F", count = 1, mine = true)),
+                    ),
+                ),
+            )
+        }
         events.add(ChatEvent.MessageReceived(ownMessage(id = "seed-3", text = "Yes! Sounds perfect.", daysAgo = 0, minute = 0, status = MessageStatus.READ)))
         events.add(
             ChatEvent.MessageReceived(

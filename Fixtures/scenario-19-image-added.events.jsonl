@@ -1,0 +1,3 @@
+{"event":"imageAdded","item":{"id":"p1","image":{"alt":"The lunch spot","url":"https://example.test/lunch.jpg"},"reactions":[{"count":1,"emoji":"👍","mine":false}],"role":"remote","senderID":"alex","senderName":"Alex","status":"read","timestamp":"2026-07-10T15:00:00Z"}}
+{"event":"imageAdded","item":{"id":"p1","image":{"alt":"The lunch spot, retitled","url":"https://example.test/lunch.jpg"},"reactions":[{"count":1,"emoji":"👍","mine":false}],"role":"remote","senderID":"alex","senderName":"Alex","status":"read","timestamp":"2026-07-10T15:00:00Z"}}
+{"event":"reactionsChanged","itemID":"p1","reactions":[{"count":2,"emoji":"❤","mine":true}]}

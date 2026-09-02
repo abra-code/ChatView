@@ -63,8 +63,10 @@ class ChatTranscriptTest {
                 ),
             ),
             ChatItem.Image(
-                id = "i1", role = ChatRole.AGENT,
-                image = ChatImage(url = "https://example.test/i.png", alt = "pic", pixelSize = PixelSize(100.0, 50.0)),
+                ChatImageItem(
+                    id = "i1", role = ChatRole.AGENT,
+                    image = ChatImage(url = "https://example.test/i.png", alt = "pic", pixelSize = PixelSize(100.0, 50.0)),
+                ),
             ),
             ChatItem.System(id = "s1", text = "system note"),
             ChatItem.Error(id = "e1", text = "boom"),

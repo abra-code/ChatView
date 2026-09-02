@@ -227,6 +227,66 @@ public struct ChatImage: Sendable, Equatable, Codable {
     }
 }
 
+/// An image transcript ITEM: `ChatImage` (the picture) plus what a person-to-person photo carries beside
+/// it - who sent it, when, its delivery state and its reactions - the same identity and delivery fields a
+/// `ChatFile` has. An agent's image (`ChatEvent.image`) fills only `id`, `role` and `image`; a photo in a
+/// person-to-person chat arrives whole through `ChatEvent.imageAdded`. `reactions` is the aggregated emoji
+/// reaction set, replaced whole by `.reactionsChanged`, exactly as on a message.
+public struct ChatImageItem: Identifiable, Equatable, Sendable, Codable {
+    public let id: String
+    public let role: ChatRole
+    public let senderID: String?
+    public let senderName: String?
+    public var timestamp: String?
+    public var status: MessageStatus?
+    public let image: ChatImage
+    public var reactions: [Reaction]?
+
+    public init(id: String, role: ChatRole, senderID: String? = nil, senderName: String? = nil,
+                timestamp: String? = nil, status: MessageStatus? = nil, image: ChatImage,
+                reactions: [Reaction]? = nil) {
+        self.id = id
+        self.role = role
+        self.senderID = senderID
+        self.senderName = senderName
+        self.timestamp = timestamp
+        self.status = status
+        self.image = image
+        self.reactions = reactions
+    }
+
+    // Flat: `id` and `role` sit beside the `image` object, which is the shape image items have always had
+    // in a transcript; the person-to-person fields are optional and omitted when nil, so an agent's image
+    // encodes exactly as before.
+    private enum CodingKeys: String, CodingKey {
+        case id, role, senderID, senderName, timestamp, status, image, reactions
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(String.self, forKey: .id)
+        self.role = try container.decode(ChatRole.self, forKey: .role)
+        self.senderID = try container.decodeIfPresent(String.self, forKey: .senderID)
+        self.senderName = try container.decodeIfPresent(String.self, forKey: .senderName)
+        self.timestamp = try container.decodeIfPresent(String.self, forKey: .timestamp)
+        self.status = try container.decodeIfPresent(MessageStatus.self, forKey: .status)
+        self.image = try container.decode(ChatImage.self, forKey: .image)
+        self.reactions = try container.decodeIfPresent([Reaction].self, forKey: .reactions)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(role, forKey: .role)
+        try container.encodeIfPresent(senderID, forKey: .senderID)
+        try container.encodeIfPresent(senderName, forKey: .senderName)
+        try container.encodeIfPresent(timestamp, forKey: .timestamp)
+        try container.encodeIfPresent(status, forKey: .status)
+        try container.encode(image, forKey: .image)
+        try container.encodeIfPresent(reactions, forKey: .reactions)
+    }
+}
+
 /// A tool invocation surfaced by an agentic transport, rendered as a card in the
 /// transcript. The shape mirrors ACP's `tool_call` payload (kind / status vocabularies
 /// are ACP's) so the ACP transport maps 1:1, but nothing here is wire-specific - the
@@ -777,7 +837,7 @@ public enum ChatItem: Identifiable, Equatable, Sendable, Codable {
     case message(ChatMessage)
     case thought(ChatMessage)
     case toolCall(ToolCallModel)
-    case image(id: String, role: ChatRole, image: ChatImage)
+    case image(ChatImageItem)
     case system(id: String, text: String)
     case error(id: String, text: String)
     case memberEvent(MemberEvent)
@@ -790,7 +850,7 @@ public enum ChatItem: Identifiable, Equatable, Sendable, Codable {
         case .message(let message):  return message.id
         case .thought(let thought):  return thought.id
         case .toolCall(let call):    return call.id
-        case .image(let id, _, _):   return id
+        case .image(let item):       return item.id
         case .system(let id, _):     return id
         case .error(let id, _):      return id
         case .memberEvent(let event): return event.id
@@ -819,9 +879,8 @@ public enum ChatItem: Identifiable, Equatable, Sendable, Codable {
         case .toolCall:
             self = .toolCall(try container.decode(ToolCallModel.self, forKey: .toolCall))
         case .image:
-            self = .image(id: try container.decode(String.self, forKey: .id),
-                          role: try container.decode(ChatRole.self, forKey: .role),
-                          image: try container.decode(ChatImage.self, forKey: .image))
+            // The item's fields sit flat beside `type` (see ChatImageItem's coding note).
+            self = .image(try ChatImageItem(from: decoder))
         case .system:
             self = .system(id: try container.decode(String.self, forKey: .id),
                            text: try container.decode(String.self, forKey: .text))
@@ -851,11 +910,9 @@ public enum ChatItem: Identifiable, Equatable, Sendable, Codable {
         case .toolCall(let call):
             try container.encode(ItemType.toolCall, forKey: .type)
             try container.encode(call, forKey: .toolCall)
-        case .image(let id, let role, let image):
+        case .image(let item):
             try container.encode(ItemType.image, forKey: .type)
-            try container.encode(id, forKey: .id)
-            try container.encode(role, forKey: .role)
-            try container.encode(image, forKey: .image)
+            try item.encode(to: encoder)
         case .system(let id, let text):
             try container.encode(ItemType.system, forKey: .type)
             try container.encode(id, forKey: .id)
@@ -1097,7 +1154,7 @@ public extension ChatItem {
 extension ChatItem {
     /// This item carrying `stamp` as its timestamp if it arrived without one, for every kind that
     /// has a timestamp to carry. An item that already has one keeps it, and the kinds that have
-    /// none (tool calls, images, system and error lines) come back unchanged.
+    /// none (tool calls, system and error lines) come back unchanged.
     ///
     /// For the lead channel, which stamps a held item with the moment it is placed: the host hands
     /// the item over when it learns the line will be needed, and that can be long before the user
@@ -1134,7 +1191,11 @@ extension ChatItem {
             guard event.timestamp == nil else { return self }
             return .sessionEvent(SessionEvent(id: event.id, kind: event.kind, timestamp: stamp,
                                               model: event.model, digest: event.digest))
-        case .toolCall, .image, .system, .error:
+        case .image(var item):
+            guard item.timestamp == nil else { return self }
+            item.timestamp = stamp
+            return .image(item)
+        case .toolCall, .system, .error:
             return self
         }
     }
@@ -1177,7 +1238,9 @@ public enum ChatEvent: Sendable {
     case currentModeChanged(modeID: String)                // ACP current_mode_update; updates the mode option
     case commandsAvailable([SlashCommand])                 // the agent's WHOLE current command set (replace)
     case configOptionsChanged([SessionConfigOption])       // the refreshed option set (a setter's confirmation)
-    case image(itemID: String, role: ChatRole, image: ChatImage)   // a standalone image element
+    case image(itemID: String, role: ChatRole, image: ChatImage)   // a standalone image element (an agent's: no sender / time)
+    case imageAdded(ChatImageItem)                                 // insert/upsert a photo item by id, with its
+                                                                   // sender, time, status and reactions
     case system(text: String)
     /// A system line for THIS session only: shown like `.system`, never journaled.
     ///
