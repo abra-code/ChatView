@@ -223,7 +223,7 @@ class ChatAgenticTest {
         assertTrue("hidden surfaces must drop their items entirely", store.items.isEmpty())
     }
 
-    // MARK: M5 part 1 - plan / usage / session options
+    // MARK: - plan / usage / session options
 
     @Test
     fun router_planReplacesWholesale() {

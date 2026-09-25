@@ -172,7 +172,7 @@ final class ACPParsingTests: XCTestCase {
         XCTAssertNil(update.diff)
     }
 
-    // MARK: M5 part 1 - configOptions / plan / usage
+    // MARK: - configOptions / plan / usage
 
     func testParseConfigOptionsOpenCodeShape() {
         // The shape OpenCode returns from session/new (captured live).

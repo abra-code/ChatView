@@ -1,6 +1,6 @@
 package com.abracode.chatview
 
-// A3 fixture (a) interop gate (plan section 8). Every Fixtures/transcript-*.json emitted by the Swift side must
+// The Kotlin-side interop gate: every Fixtures/transcript-*.json emitted by the Swift side must
 // decode in Kotlin and re-encode to a SEMANTICALLY identical document, and the decode must be round-trip stable.
 //
 // - PRIMARY: assertJsonSemanticallyEqual (numeric-normalizing tree compare) against the Swift golden - applies to

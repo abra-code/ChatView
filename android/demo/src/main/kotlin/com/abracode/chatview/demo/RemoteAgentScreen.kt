@@ -4,8 +4,8 @@ package com.abracode.chatview.demo
 // an ACP agent running on a Mac (or anywhere) through chatview-acp-bridge, streams its turns, and answers its
 // permission prompts.
 //
-// It is also the Android reference host for the cold-launch checkpoint contract (remote-agent plan 4.2a): the
-// transcript and its resume cursor are persisted ATOMICALLY, and the plan's own risk list calls a non-atomic host
+// It is also the Android reference host for the cold-launch checkpoint contract: the
+// transcript and its resume cursor are persisted ATOMICALLY, and a non-atomic host is
 // the one failure the design cannot close in code - so the demo has to get it right visibly, not incidentally.
 
 import android.content.Context
@@ -68,7 +68,7 @@ import java.io.File
  *
  * THAT IS WRONG FOR THE TOKEN IN A REAL APP: it authorizes tool execution on the bridge host, which is remote code
  * execution, and it belongs in an Android Keystore-backed EncryptedSharedPreferences. The demo keeps it simple and
- * says so loudly rather than implying that plaintext prefs for such a credential are fine (plan 4.6).
+ * says so loudly rather than implying that plaintext prefs for such a credential are fine.
  */
 class RemoteAgentSettings(context: Context) {
 
@@ -256,7 +256,7 @@ private fun JsonPrimitive.contentOrNullIfNotString(): String? = if (isString) co
 
 /**
  * Hands ChatView its transport config and any restored transcript. Both channels are host-injected at runtime,
- * never declared in static UI data - the security boundary that keeps a bridge token out of a document (plan 4.6).
+ * never declared in static UI data - the security boundary that keeps a bridge token out of a document.
  */
 private class RemoteAgentContentSource(
     private val config: JsonObject,
@@ -358,7 +358,7 @@ internal fun RemoteAgentScreen() {
                 val transport = buildJsonObject {
                     put("url", settings.url)
                     put("token", settings.token)
-                    // Both halves or neither (plan 4.5): the transcript and the cursor it was minted with are
+                    // Both halves or neither: the transcript and the cursor it was minted with are
                     // injected together, on the same launch, or the demo starts clean.
                     if (resuming && restored != null) {
                         put("session", restored.sessionId)

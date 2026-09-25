@@ -4,9 +4,9 @@
 // iOS demo app. One source file, two apps: a screen that drifted between platforms would stop
 // being evidence that the transport behaves the same on both.
 //
-// It is also the reference host implementation for the cold-launch checkpoint contract
-// (plan section 4.2a). That contract asks the host to persist the transcript and its resume
-// cursor ATOMICALLY, and the plan's own risk list calls a non-atomic host the one failure this
+// It is also the reference host implementation for the cold-launch checkpoint contract.
+// That contract asks the host to persist the transcript and its resume
+// cursor ATOMICALLY, and a non-atomic host is the one failure this
 // design cannot close in code - so the demo has to get it right visibly, not incidentally.
 
 import SwiftUI
@@ -19,7 +19,7 @@ import ChatViewACP
 /// Where the bridge is and how to talk to it. Persisted in UserDefaults, WHICH IS WRONG for the
 /// token in a real app - it belongs in the Keychain. The demo keeps it simple and says so
 /// loudly rather than implying that plist storage for a remote-code-execution credential is
-/// fine (see plan 4.6).
+/// fine.
 final class RemoteAgentSettings: ObservableObject {
 
     @Published var url: String {
@@ -224,7 +224,7 @@ final class RemoteAgentPersistence: ObservableObject {
 
 /// Hands ChatView its transport config and any restored transcript. Both channels are
 /// host-injected at runtime, never declared in static UI data - the security boundary that
-/// keeps a bridge token out of a document (plan 4.6).
+/// keeps a bridge token out of a document.
 final class RemoteAgentContentSource: ChatContentSource {
     private let config: Any
     private let content: Any?
@@ -321,7 +321,7 @@ public struct RemoteAgentScreen: View {
             "token": settings.token,
             "session": settings.sessionMode,
         ]
-        // Both halves or neither (plan 4.5). The transcript and the cursor it was minted with
+        // Both halves or neither. The transcript and the cursor it was minted with
         // are injected together, on the same launch, or the demo starts clean.
         if let restored, settings.sessionMode != "new" {
             transport["session"] = restored.sessionId

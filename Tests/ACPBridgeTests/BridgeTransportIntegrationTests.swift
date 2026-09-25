@@ -6,7 +6,7 @@
 //
 // This is the test that matters most in phase 2, because the unit tests on each side are
 // written against the same document rather than against each other: `ScriptedBridge` in
-// ChatACPRemoteTests is a reading of plan section 7, and the bridge is a separate reading of
+// ChatACPRemoteTests is a reading of the wire spec, and the bridge is a separate reading of
 // it. Two independent readings agreeing is worth far more than either one passing alone.
 //
 // Every wait is deadline-bounded - the failure mode here is a hang, and a hang has to fail one
@@ -313,7 +313,7 @@ final class BridgeTransportIntegrationTests: XCTestCase {
             }
         }
         // Attaching from 0 replays turn one. The second device renders one item MORE than the
-        // first did - the user message. That is plan 4.5's documented asymmetry, not a defect:
+        // first did - the user message. That is a documented asymmetry, not a defect:
         // the originating device already showed its own send through the store's optimistic
         // append (which is not a transport event at all) and suppresses the echo, while every
         // other view of that message comes off the log as acpr-m-<seq>.

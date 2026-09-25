@@ -1,7 +1,7 @@
 // Sources/ACP/ACPRemoteTransport.swift
 //
 // The `acp-remote` transport: ChatView driving an ACP agent that runs somewhere else, over
-// the bridge protocol (plan section 7). Ungated - this is the one that runs on iOS.
+// the bridge protocol. Ungated - this is the one that runs on iOS.
 //
 // The shape differs from the stdio transport in exactly one way, and everything else follows
 // from it: the connection is not the session. A socket can drop and come back many times
@@ -10,7 +10,7 @@
 //  - A turn is NEVER ended because the socket died (invariant I9). A dropped socket says
 //    nothing about a turn that is still running bridge-side; the truth arrives with the
 //    replay. The composer is gated by connection state instead.
-//  - Every transcript id is derived from the bridge's sequence number (plan 4.5), so two
+//  - Every transcript id is derived from the bridge's sequence number, so two
 //    devices - and the same device after a restart - render byte-identical ids without any
 //    reconciliation protocol.
 //  - `lastSeq` advances only AFTER an entry is fully processed (invariant I7), so a reattach
@@ -130,7 +130,7 @@ final class ACPRemoteTransport: ChatTransport, @unchecked Sendable {
         self.requestedCwd = settings["cwd"] as? String
         self.handshakeTimeout = Self.clampedTimeout(settings["handshakeTimeoutSeconds"], default: 15)
 
-        // The cold-launch cursor (plan 4.2a). Only meaningful against the session id it was
+        // The cold-launch cursor. Only meaningful against the session id it was
         // minted for: with "new" or "latest" there is nothing for it to line up with, and a
         // cursor applied to the wrong session silently skips that session's history.
         if let raw = settings["resumeAfterSeq"] {
@@ -894,7 +894,7 @@ final class ACPRemoteTransport: ChatTransport, @unchecked Sendable {
         eventSink.yield(.error(message: "The remote agent session has ended (\(reason))", recoverable: false))
     }
 
-    // MARK: - Segmentation (ids derived from seq, per plan 4.5)
+    // MARK: - Segmentation (ids derived from seq)
 
     private func appendMessageChunk(_ text: String, role: ChatRole, seq: Int) {
         guard !text.isEmpty else {
@@ -966,7 +966,7 @@ final class ACPRemoteTransport: ChatTransport, @unchecked Sendable {
         }
     }
 
-    // MARK: - Cold-launch checkpoint (plan 4.2a)
+    // MARK: - Cold-launch checkpoint
 
     private func emitCheckpointIfPossible() {
         let (session, seq) = lock.withLock { (self.sessionID, self.lastSeq) }

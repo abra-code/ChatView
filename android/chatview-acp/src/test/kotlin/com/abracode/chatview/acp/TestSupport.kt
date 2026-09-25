@@ -170,7 +170,7 @@ class ScriptedSocketFactory(private val configure: (Int, ScriptedSocket) -> Unit
 }
 
 /**
- * A bridge written FROM the wire spec (plan section 7), deliberately: this double is the appendix's Kotlin-side
+ * A bridge written FROM the wire spec, deliberately: this double is the Kotlin-side
  * conformance check, the twin of Swift's ScriptedBridge. It answers the client's requests and lets a test push
  * seq-stamped notifications.
  */

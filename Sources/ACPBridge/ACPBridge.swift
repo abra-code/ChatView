@@ -407,7 +407,7 @@ package final class ACPBridge: @unchecked Sendable {
 
         // A hung agent would otherwise leave activeTurn set forever: no turn_ended for the
         // client (which I9 forbids it from inventing) and -32002 on every later prompt, i.e. a
-        // session wedged until the bridge restarts. Off by default; see plan 4.3a.
+        // session wedged until the bridge restarts. Off by default.
         if config.turnTimeoutSeconds > 0 {
             let limit = config.turnTimeoutSeconds
             Task { [weak self] in

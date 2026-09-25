@@ -8,7 +8,7 @@ package com.abracode.chatview
 // store mutation (route). Outbound, it appends the user's message optimistically, emits the host-facing
 // ChatHostEvents, and hands a normalized ChatCommand to the transport.
 //
-// Kotlin mapping (plan section 5): Swift's @MainActor confinement maps to a single-threaded injected CoroutineScope
+// Kotlin mapping: Swift's @MainActor confinement maps to a single-threaded injected CoroutineScope
 // - every `Task { ... }` becomes `scope.launch { ... }`, so route(), the send tasks, and the 50 ms flush all
 // serialize on one dispatcher. AsyncStream<ChatEvent> is drained as a kotlinx ReceiveChannel. @Published fields are
 // plain read-only properties here (A5 is pure logic); A6 wraps the same surface in Compose snapshot state without
@@ -1120,7 +1120,7 @@ internal class ChatStore(
             val transport = this.transport
             scope.launch { transport?.send(ChatCommand.Cancel) }
         }
-        // Seed the transport's wire history from the loaded transcript (P0-2 continue-in). No-op if not built yet.
+        // Seed the transport's wire history from the loaded transcript (continue-in seam). No-op if not built yet.
         primeTransportFromItems()
         refreshFindIfNeeded()
     }

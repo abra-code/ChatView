@@ -1,9 +1,9 @@
 // The remote ACP transport module: the Kotlin twin of the Swift ChatViewACP product's `acp-remote` transport.
-// It speaks the bridge wire protocol (Private/ChatView_Remote_Agent_Plan.md section 7) to a chatview-acp-bridge
+// It speaks the bridge wire protocol to a chatview-acp-bridge
 // over one WebSocket, and registers itself with ChatTransportRegistry under the protocol name "acp-remote".
 //
 // Separate module on purpose, mirroring how Swift keeps transports in their own products: the OkHttp dependency
-// is the sanctioned exception to the :chatview no-OkHttp rule (plan 3.4) and must not leak into the component.
+// is the sanctioned exception to the :chatview no-OkHttp rule and must not leak into the component.
 // Hand-rolling RFC 6455 - framing, masking, fragmentation, ping/pong, close handshake, TLS - is several hundred
 // lines of security-sensitive code with none of OkHttp's hardening, and java.net.http.HttpClient does not exist
 // on Android. OkHttp is `implementation`-scoped here, so a host that never links this module never pulls it.

@@ -380,7 +380,7 @@ final class BridgeProtocolTests: XCTestCase {
         XCTAssertEqual(client.received(method: "bridge/session_ended").first?["reason"] as? String, "agent_exit")
     }
 
-    /// A hung agent must not wedge the session permanently (plan 4.3a).
+    /// A hung agent must not wedge the session permanently.
     func testHungAgentTurnIsWatchdogged() throws {
         // Accepts the prompt and never answers it.
         let hang = """

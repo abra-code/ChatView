@@ -9,7 +9,7 @@
 // other protocols (ACP, OpenAI SSE, or a host's own) live in their own modules and
 // register a factory with ChatTransportRegistry (see ActionUIChatCore.registerTransport).
 //
-// PUBLIC API NOTE (P0-6): ChatTransport, ChatLogger, ChatTransportConfig, and
+// PUBLIC API NOTE: ChatTransport, ChatLogger, ChatTransportConfig, and
 // ChatTransportFactory are the frozen contract an out-of-module transport builds
 // against. LocalChatTransport / ChatReplyContent stay internal.
 
@@ -85,7 +85,7 @@ public protocol ChatTransport: AnyObject, Sendable {
     /// Replaces the transport's wire history with a restored transcript's messages, so a
     /// continued conversation is sent with its prior turns as context (and a cleared / new
     /// transcript resets the wire). The store calls this SYNCHRONOUSLY on a content restore
-    /// (P0-2 continue-in seam), whenever a transport is (re)built while a transcript is
+    /// (continue-in seam), whenever a transport is (re)built while a transcript is
     /// already loaded, and - for a restore deferred by the "prime": "defer" directive -
     /// right before the first prompt that follows it; always before any subsequent prompt,
     /// so ordering holds without serializing the async command channel. `messages` are the transcript's message
@@ -192,9 +192,9 @@ public typealias ChatTransportFactory = (ChatTransportConfig, any ChatLogger) th
 /// scripted agent reply streamed back chunk-by-chunk, which proves the element
 /// end-to-end (append -> stream deltas -> finalize, auto-scroll, role styling) with zero
 /// protocol risk. The `reply` style selects the script: "echo" repeats the prompt,
-/// "markdown" streams a Markdown showcase (M2), and "agentic" runs a scripted agent
+/// "markdown" streams a Markdown showcase, and "agentic" runs a scripted agent
 /// turn - thoughts, tool-call cards, a permission gate, then a final answer - so the
-/// agentic surfaces are exercised before any wire transport exists (M3). A host that
+/// agentic surfaces are exercised before any wire transport exists. A host that
 /// wants to drive the transcript itself will get a push API in a later milestone;
 /// `echo` (config, default true) gates the demo reply.
 ///
@@ -230,7 +230,7 @@ final class LocalChatTransport: ChatTransport, @unchecked Sendable {
 
     func start() async {
         // The agentic style advertises demo session options so the status bar (model /
-        // mode, M5) exercises with no agent; the plain styles stay chrome-free.
+        // mode) exercises with no agent; the plain styles stay chrome-free.
         var options: [SessionConfigOption] = []
         if replyStyle == "agentic" {
             options = [
@@ -336,7 +336,7 @@ final class LocalChatTransport: ChatTransport, @unchecked Sendable {
 
     /// The scripted agent turn: a thought stream, a completed search tool call, an edit
     /// tool call gated by a permission request, then a streamed Markdown summary. It
-    /// exercises every M3 event so the router / cards / approval UI run end-to-end with
+    /// exercises every agentic event so the router / cards / approval UI run end-to-end with
     /// no wire protocol. The shape intentionally mirrors what an ACP agent produces.
     private func streamAgentic(itemID: String, prompt: String) async {
         // 1. Reasoning streams first, like an agent thinking before acting.
@@ -471,8 +471,8 @@ final class LocalChatTransport: ChatTransport, @unchecked Sendable {
 }
 
 /// Canned reply content for the local transport. `echo` repeats the prompt; `markdown` returns a
-/// showcase that exercises the M2 Markdown renderer (headings, emphasis, code, lists, a quote, a
-/// table, a rule) and embeds the prompt as a quote. The `agentic` pieces script the M3 demo turn
+/// showcase that exercises the Markdown renderer (headings, emphasis, code, lists, a quote, a
+/// table, a rule) and embeds the prompt as a quote. The `agentic` pieces script the demo turn
 /// (a thought, a diff, a summary); the turn's structure lives in the transport.
 enum ChatReplyContent {
 

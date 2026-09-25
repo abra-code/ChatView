@@ -1,6 +1,6 @@
 // Tests/ChatViewTests/ChatTranscriptTests.swift
 //
-// Tests for the P0-2 session-transcript seam: the transcript's Codable format (round-trip + a
+// Tests for the session-transcript seam: the transcript's Codable format (round-trip + a
 // pinned JSON shape), the incremental entryActionID firing (once per finalized entry, correct
 // monotonic sequence, never on deltas), restoring a transcript into states["content"] then
 // appending a live turn, and the readOnly / properties.content config parsing.

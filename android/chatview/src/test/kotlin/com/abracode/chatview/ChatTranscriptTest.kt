@@ -2,7 +2,7 @@ package com.abracode.chatview
 
 // Port of Tests/ChatViewTests/ChatTranscriptTests.swift.
 //
-// Tests for the P0-2 session-transcript seam: the transcript's Codable format (round-trip + a pinned JSON shape),
+// Tests for the session-transcript seam: the transcript's Codable format (round-trip + a pinned JSON shape),
 // the incremental entry-event firing (once per finalized entry, correct monotonic sequence, never on deltas),
 // restoring a transcript into the content source then appending a live turn, and the readOnly / properties.content
 // config parsing. Combines the four Swift XCTestCase classes (ChatTranscriptCodableTests, ChatTranscriptSeamTests,

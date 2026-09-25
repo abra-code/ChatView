@@ -6,16 +6,15 @@
 //   - the normalized outbound: ChatCommand (what the UI sends a transport)
 //
 // The ChatEvent / ChatCommand vocabularies are a SUPERSET shaped by the richest
-// transport (ACP); a simpler transport emits only a subset. M1 defined the plain
-// message lifecycle plus system / error notices; M3 adds the agentic vocabulary -
+// transport (ACP); a simpler transport emits only a subset. It covers the plain
+// message lifecycle plus system / error notices, and the agentic vocabulary -
 // reasoning (thoughts), tool-call cards, and permission requests - shaped 1:1
 // after ACP's session/update payloads so the ACP transport maps directly, but
-// still transport-agnostic (the scripted local transport emits them too). Plans,
-// terminals, and slash commands arrive with the M5 side panels
-// (Private/chat-element-design.md).
+// still transport-agnostic (the scripted local transport emits them too).
+// Terminals are not implemented yet.
 //
 // PUBLIC API NOTE: ChatEvent / ChatCommand and every value type they carry are the
-// frozen transport-facing contract (P0-6). A transport lives in its own module
+// frozen transport-facing contract. A transport lives in its own module
 // (ActionUIChatACP, ActionUIChatOpenAI, or a host's own) and depends on
 // ActionUIChatCore only for these types plus the ChatTransport protocol; so they are
 // `public` with explicit `public init`s. The render model that never crosses the
@@ -26,7 +25,7 @@ import CoreGraphics
 
 /// The party a transcript item belongs to. A transport maps its own participants
 /// onto these keys; the JSON `roles` map then resolves each key to a side / label
-/// / tint. In single-alignment (M1) `side` is ignored and only label / tint matter.
+/// / tint. In single-alignment `side` is ignored and only label / tint matter.
 public enum ChatRole: String, Sendable, Hashable, Codable {
     case local      // the local user (composer input)
     case agent      // an AI agent
@@ -97,7 +96,7 @@ public struct ReplyRef: Equatable, Sendable, Codable {
 /// A streaming (agentic) message enters and leaves a transport only as itemID + role +
 /// text deltas (ChatEvent), never as this whole value; a P2P message, by contrast,
 /// arrives complete (`.messageReceived`). Either way it IS part of the persisted
-/// transcript (P0-2), so it is public and Codable. The transient `isStreaming` render
+/// transcript, so it is public and Codable. The transient `isStreaming` render
 /// flag is NOT serialized: a loaded message is always final (decodes with isStreaming
 /// == false).
 ///
@@ -300,7 +299,7 @@ public struct ChatImageItem: Identifiable, Equatable, Sendable, Codable {
 /// are optional detail the card can disclose.
 public struct ToolCallModel: Identifiable, Equatable, Sendable, Codable {
 
-    /// Persistence coding keys (P0-2): pinned so the on-disk format does not drift.
+    /// Persistence coding keys: pinned so the on-disk format does not drift.
     private enum CodingKeys: String, CodingKey {
         case id, title, kind, status, contentText, diff, rawInput, rawOutput
     }
@@ -341,8 +340,8 @@ public struct ToolCallModel: Identifiable, Equatable, Sendable, Codable {
 }
 
 /// A proposed or applied file change carried inside a tool call's content
-/// (ACP's `diff` ToolCallContent). Rendered as a code preview in M3; a real
-/// side-by-side diff viewer is an M5 surface.
+/// (ACP's `diff` ToolCallContent). Rendered as a code preview; a real
+/// side-by-side diff viewer is not implemented yet.
 public struct ToolCallDiff: Equatable, Sendable, Codable {
     private enum CodingKeys: String, CodingKey {
         case path, oldText, newText
@@ -473,8 +472,8 @@ public struct UsageInfo: Equatable, Sendable, Codable {
 
 /// One selectable session option advertised by the agent at session start (OpenCode's
 /// session/new `configOptions`: model, mode, ...; the ACP spec's `modes` sketch maps
-/// onto the same shape). Displayed read-only in the status line (M5 part 1); the
-/// interactive setter is M5 part 3.
+/// onto the same shape). Displayed read-only in the status line; an
+/// interactive setter is also available.
 public struct SessionConfigOption: Identifiable, Equatable, Sendable {
     public struct Choice: Equatable, Sendable {
         public let value: String
@@ -716,14 +715,14 @@ public struct Participant: Identifiable, Equatable, Sendable, Codable {
     }
 }
 
-/// A heterogeneous, arrival-ordered transcript entry. M1 carries messages plus
-/// system / error notices; M3 adds thoughts (reasoning, `ChatMessage`-shaped but
+/// A heterogeneous, arrival-ordered transcript entry. It carries messages plus
+/// system / error notices, thoughts (reasoning, `ChatMessage`-shaped but
 /// visually folded) and tool-call cards; the P2P (v2) layer adds member events, call
-/// events, and file / voice items. Plan / terminal panels are M5 side surfaces and
+/// events, and file / voice items. Plan / terminal panels are side surfaces and
 /// live outside the transcript.
 ///
 /// The store's render model - transports emit ChatEvents and the store builds ChatItems
-/// from them - and, since P0-2, the unit of the persisted transcript, so it is public and
+/// from them - and the unit of the persisted transcript, so it is public and
 /// Codable. Codable uses a stable `type` discriminator ("message" / "thought" / "toolCall"
 /// / "image" / "system" / "error") so the on-disk format does not drift.
 /// A record, in the transcript, of something changing about the SESSION rather than about the
@@ -947,7 +946,7 @@ public enum ChatItem: Identifiable, Equatable, Sendable, Codable {
     }
 }
 
-/// The serializable form of a whole chat session (P0-2). The chat has no scalar value: a host
+/// The serializable form of a whole chat session. The chat has no scalar value: a host
 /// RESTORES a saved session at runtime by injecting this (as JSON / a dict / a string) through
 /// its ChatContentSource's content channel (in an ActionUI host: states["content"] via
 /// setElementState / setElementStateFromString), and persists incrementally the other way, per

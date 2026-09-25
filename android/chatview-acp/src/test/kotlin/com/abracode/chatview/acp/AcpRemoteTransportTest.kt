@@ -1,10 +1,10 @@
 package com.abracode.chatview.acp
 
-// Port of the transport half of Tests/ACPTests/ChatACPRemoteTests.swift (plan items 3.4 / 2.2 / 2.2a). Same
+// Port of the transport half of Tests/ACPTests/ChatACPRemoteTests.swift. Same
 // scenarios, same names camelCased, same assertions - the two suites are meant to be diffable, so a behavior that
 // drifts on one platform shows up as a test that exists only on the other.
 //
-// The bridge these tests talk to is ScriptedBridge in TestSupport.kt, written from the wire spec (plan section 7)
+// The bridge these tests talk to is ScriptedBridge in TestSupport.kt, written from the wire spec
 // rather than from the Swift bridge, which is what makes it a conformance check rather than a mirror.
 
 import com.abracode.chatview.ChatCommand
@@ -786,7 +786,7 @@ class AcpRemoteTransportTest {
         h.transport.stop()
     }
 
-    // MARK: - Cold-launch checkpoint (plan 4.2a)
+    // MARK: - Cold-launch checkpoint
 
     @Test
     fun checkpoint_emittedAtTurnBoundaryOnly() = runBlocking {

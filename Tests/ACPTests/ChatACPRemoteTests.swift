@@ -3,8 +3,8 @@
 // Tests for the `acp-remote` client: the JSON-RPC connection, and the transport's demux,
 // reconnect, permission, and checkpoint behavior.
 //
-// `ScriptedBridge` below is written FROM section 7 of the plan rather than from the bridge's
-// implementation, deliberately: it is the appendix's first conformance check, and the
+// `ScriptedBridge` below is written FROM the wire spec rather than from the bridge's
+// implementation, deliberately: it is the first conformance check, and the
 // phase 2.3 integration tests then run the same transport against the REAL bridge. If the two
 // ever disagree, one of them is wrong about the spec and that is exactly what we want to find.
 //

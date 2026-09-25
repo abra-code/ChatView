@@ -9,7 +9,7 @@
 ## kotlinx-coroutines-test + the AndroidX/Compose test runner.
 ##
 ## That no-OkHttp rule is scoped to :chatview, the component every host links. :chatview-acp is the sanctioned
-## exception (remote-agent plan 3.4): a WebSocket transport either links a hardened client or hand-rolls RFC 6455
+## exception: a WebSocket transport either links a hardened client or hand-rolls RFC 6455
 ## - framing, masking, fragmentation, ping/pong, close handshake, TLS - and java.net.http.HttpClient does not
 ## exist on Android. OkHttp stays implementation-scoped inside that one module, so a host that never links
 ## :chatview-acp never pulls it, exactly like a Swift host that never links ChatViewACP.

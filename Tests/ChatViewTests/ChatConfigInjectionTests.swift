@@ -2,7 +2,7 @@
 //
 // Tests for the host-injected operational-config seam (states["config"]). The Chat
 // element takes its protocol + transport NOT from the document but from a runtime
-// injection into states["config"] (the same @Published states channel as the P0-2
+// injection into states["config"] (the same @Published states channel as the
 // states["content"] restore). The store DEFERS building the transport until the config
 // first resolves to a VIABLE one; after that an IDENTICAL injection is deduped while a
 // DIFFERENT viable one re-configures in place (tear down + attach + re-prime from the
@@ -236,7 +236,7 @@ final class ChatConfigInjectionTests: XCTestCase {
         store.teardown()
     }
 
-    // MARK: - Restore primes the transport wire history (P0-2 continue-in)
+    // MARK: - Restore primes the transport wire history (continue-in seam)
 
     private func registerPrimingTransport(_ box: TransportBox) -> String {
         let name = "prime-test-\(UUID().uuidString)"

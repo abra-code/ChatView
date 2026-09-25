@@ -1,6 +1,6 @@
 package com.abracode.chatview
 
-// Shared test helpers for the cross-platform JSON interop gate (plan section 8).
+// Shared test helpers for the cross-platform JSON interop gate.
 //
 // - canonicalJson: a sorted-keys, whitespace-free rendering, so a Kotlin re-encode can be compared byte-for-byte
 //   against a Swift `.sortedKeys` golden where no Double-typed model field is present.

@@ -10,7 +10,7 @@ package com.abracode.chatview
 // The ChatEvent / ChatCommand vocabularies are a SUPERSET shaped by the richest transport (ACP); a simpler
 // transport emits only a subset. See the Swift source for the milestone history.
 //
-// Serialization mirrors the Swift Codable exactly (JSON contract is frozen, P0-2): kotlinx.serialization with
+// Serialization mirrors the Swift Codable exactly (JSON contract is frozen): kotlinx.serialization with
 // explicitNulls=false / ignoreUnknownKeys=true / encodeDefaults=false, plus hand-written serializers wherever
 // Swift hand-writes (ChatItem discriminator, ChatImage pixel flatten, ChatFile decode defaults, ChatTranscript
 // tolerant decode + plan-only-when-nonempty). A v1 value serializes byte-identically to before; a v1 document
@@ -643,7 +643,7 @@ internal object ChatItemSerializer : KSerializer<ChatItem> {
 }
 
 /**
- * The serializable form of a whole chat session (P0-2). `version` pins the format; `items` is the transcript;
+ * The serializable form of a whole chat session. `version` pins the format; `items` is the transcript;
  * `usage` / `plan` are the latest status surfaces; `title` is an app-owned label; `participants` is the group
  * roster (v2). Tolerant decode (version -> 1, items -> [], plan -> []); `plan` encoded only when non-empty;
  * `participants` omitted when null so a v1 transcript stays byte-identical.

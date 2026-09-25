@@ -6,7 +6,7 @@ package com.abracode.chatview.ui
 // inert until the host has injected a viable config and (for a reportsConnectionState transport) the link is up;
 // a pending permission additionally pauses input while leaving Stop live.
 //
-// submitOn maps to Android idiom (plan divergence D3): `return` / `shift-return-newline` use a single-line field
+// submitOn maps to Android idiom (deliberately different from the Swift version): `return` / `shift-return-newline` use a single-line field
 // whose IME Send action submits (Enter cannot insert a newline, matching the Apple single-line field); modifier-
 // return uses a multiline field where Enter inserts a newline and Ctrl+Enter (hardware keyboard) submits, with the
 // Send button as the always-available touch submit.

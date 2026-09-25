@@ -3,8 +3,8 @@
 // The ACP (Agent Client Protocol) transport: launches an ACP agent as a subprocess
 // (over ACPConnection's stdio JSON-RPC) and maps the ACP session vocabulary onto the
 // normalized ChatEvent / ChatCommand stream. This file is the ONLY place that knows
-// ACP's method names and payload shapes (the design doc's "keep the transport's ACP
-// mapping in one file"); everything above it - store, router, views - is unchanged
+// ACP's method names and payload shapes, keeping the transport's ACP
+// mapping in one file; everything above it - store, router, views - is unchanged
 // from the scripted local transport.
 //
 // Lifecycle: start() launches the agent, runs `initialize` (advertising NO fs /
@@ -12,7 +12,7 @@
 // must not assume one), opens a session with `session/new` (cwd + declared MCP
 // servers), and emits sessionReady. A `.prompt` command becomes one `session/prompt`
 // turn; during the turn the agent streams `session/update` notifications which demux
-// onto ChatEvents per the design doc's table, and the turn ends when the prompt
+// onto ChatEvents through a fixed mapping, and the turn ends when the prompt
 // request resolves with a stopReason. `.cancel` sends the `session/cancel`
 // notification (the in-flight prompt then resolves with stopReason "cancelled").
 // `session/request_permission` parks the agent's request on a continuation until the

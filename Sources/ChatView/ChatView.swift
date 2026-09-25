@@ -6,12 +6,12 @@
 // identity), starts the session on appear, and tears it down on disappear. Renders
 // the single-alignment transcript (every message leading / full-width, parties
 // distinguished by tint + role label) and a composer whose submit policy is
-// config-driven. Message bodies render as Markdown through the RichText component
-// (M2). Agentic surfaces (M3) are transcript rows too: thoughts fold behind a
+// config-driven. Message bodies render as Markdown through the RichText component.
+// Agentic surfaces are transcript rows too: thoughts fold behind a
 // disclosure, tool calls are status cards that mutate in place, and a pending
 // permission request pins an approval card above the composer (an inline gate,
 // not a window-modal sheet, so an embedded element never takes over the host
-// window). Dual alignment and the M5 side panels arrive in later milestones;
+// window). Dual alignment and the plan / session-status side panels render here too;
 // this view stays the same shape.
 
 import SwiftUI
@@ -28,7 +28,7 @@ public struct ChatView: View {
     private let config: ChatConfiguration
 
     private let bottomAnchor = "chat.bottom.anchor"
-    // Scroll anchoring (P0-4): auto-scroll follows new content only while the user is pinned to the
+    // Scroll anchoring: auto-scroll follows new content only while the user is pinned to the
     // bottom. When they scroll up to read back, auto-scroll suspends (streaming does not fight them)
     // and a "jump to latest" pill appears; returning to the bottom or tapping the pill re-pins.
     @State private var isPinnedToBottom = true
@@ -99,7 +99,7 @@ public struct ChatView: View {
                     store.respondToPermission(request.id, optionID: optionID)
                 }
             }
-            // readOnly is the history-viewer mode: no composer, no slash-command menu (P0-2). The
+            // readOnly is the history-viewer mode: no composer, no slash-command menu. The
             // status bar stays to show a restored usage total, but with no live session there are no
             // option menus.
             if !config.readOnly {
@@ -1029,7 +1029,7 @@ public struct ChatView: View {
     }
 }
 
-// MARK: - Scroll-to-bottom tracking (P0-4)
+// MARK: - Scroll-to-bottom tracking
 
 /// The transcript geometry the pin update consumes on the pre-macOS-15 fallback path (the macOS 15+
 /// path gets the same three values straight from `onScrollGeometryChange`). Emitted by the bottom
@@ -1204,7 +1204,7 @@ private struct ThoughtRow: View {
     }
 }
 
-// MARK: - Slash-command menu (agentic, M5)
+// MARK: - Slash-command menu (agentic)
 
 /// The composer's slash-command menu model: active while the draft is a lone, partial
 /// first token beginning with "/" (no whitespace typed yet) and an advertised command
@@ -1399,7 +1399,7 @@ private struct DigestBody: View {
     }
 }
 
-// MARK: - Plan panel (agentic, M5)
+// MARK: - Plan panel (agentic)
 
 // The agent's evolving task list (ACP `plan`), pinned ABOVE the transcript as a status
 // surface - never interleaved with chat (surfaces.plan: panel default, expanded /
@@ -1460,7 +1460,7 @@ private struct PlanPanel: View {
     }
 }
 
-// MARK: - Session status bar (agentic, M5)
+// MARK: - Session status bar (agentic)
 
 // A thin status line under the composer: the context indicator (whether the model
 // remembers the conversation shown - it may load lazily, on the next send), the
@@ -1821,7 +1821,7 @@ private struct ImageRow: View {
 // MARK: - Tint token resolver
 
 // ActionUI's ColorHelper is internal, so the add-on resolves the common color
-// tokens locally for M1 (the same token vocabulary). Promoting a public color
+// tokens locally (the same token vocabulary). Promoting a public color
 // resolver in core would let this defer to the framework; tracked as a later
 // refinement. Internal (not private) so the dual-alignment rows share it.
 enum ChatTint {

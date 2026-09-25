@@ -1,6 +1,6 @@
 package com.abracode.chatview
 
-// The Kotlin side of the fixture-scenario replay gate (plan section 8, Fixtures/README.md). Decodes each committed
+// The Kotlin side of the fixture-scenario replay gate (Fixtures/README.md). Decodes each committed
 // scenario-NN.events.jsonl with the test-only event codec, routes it through a fresh ChatStore synchronously (no
 // clock advance - coalesced flushes apply immediately on messageEnd, timers never fire), snapshots the resulting
 // transcript, and asserts it matches the committed scenario-NN.expected.json. This proves the Kotlin store's routing

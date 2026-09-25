@@ -4,7 +4,7 @@
 // transcript: run grouping, day-separator placement, and RFC 3339 timestamp parsing. No
 // SwiftUI - the view consumes these results to place bubbles, sender labels, avatars,
 // timestamp captions, and day headers. Kept pure and extracted because run-grouping and
-// day-separator logic breeds off-by-ones (plan risk 3), so it is tested directly.
+// day-separator logic breeds off-by-ones, so it is tested directly.
 
 import Foundation
 

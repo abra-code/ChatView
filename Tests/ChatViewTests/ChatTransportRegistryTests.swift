@@ -1,6 +1,6 @@
 // Tests/ChatViewTests/ChatTransportRegistryTests.swift
 //
-// Unit tests for the transport registry (P0-6): a registered factory builds its own
+// Unit tests for the transport registry: a registered factory builds its own
 // transport; the reserved `local` name cannot be overridden; the latest registration
 // for a name wins. Viability (`makeIfViable`): an UNREGISTERED name degrades to the
 // built-in `local` (a PERMANENT condition - registration happens at launch), while a

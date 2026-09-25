@@ -4,7 +4,7 @@ package com.abracode.chatview
 //
 // Tests for the host-injected operational-config seam (states["config"]). The Chat element takes its protocol +
 // transport NOT from the document but from a runtime injection into states["config"] (the same channel as the
-// P0-2 states["content"] restore). The store DEFERS building the transport until the config first resolves to a
+// states["content"] restore). The store DEFERS building the transport until the config first resolves to a
 // VIABLE one; after that an IDENTICAL injection is deduped while a DIFFERENT viable one re-configures in place
 // (tear down + attach + re-prime from the loaded items - the host-driven model switch). Until configured the
 // element is inert (isConfigured == false, no transport); readOnly never builds a transport.
@@ -165,7 +165,7 @@ class ChatConfigInjectionTest {
         store.teardown()
     }
 
-    // MARK: - Restore primes the transport wire history (P0-2 continue-in)
+    // MARK: - Restore primes the transport wire history (continue-in seam)
 
     private fun registerPrimingTransport(box: TransportBox): String {
         val name = "prime-test-" + java.util.UUID.randomUUID()

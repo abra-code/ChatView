@@ -1,7 +1,7 @@
 // Tests/DemoSharedTests/RemoteAgentPersistenceTests.swift
 //
-// The demo screen is the reference host implementation of the cold-launch checkpoint contract
-// (plan 4.2a), and section 9's risk 3 names a non-atomic host as the one failure the design
+// The demo screen is the reference host implementation of the cold-launch checkpoint contract.
+// A non-atomic host is the one failure the design
 // cannot close in code. A reference implementation that is only checked by eye is not a
 // reference - and in fact the first version of this class manufactured exactly the failure it
 // was meant to demonstrate the absence of, which is what these tests exist to prevent.

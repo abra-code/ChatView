@@ -206,7 +206,7 @@ final class ChatStore: ObservableObject {
     private var streamBuffers: [String: String] = [:]
     private var flushPending = false
 
-    // Session transcript seam (P0-2). A saved session RESTORES through the content source's
+    // Session transcript seam. A saved session RESTORES through the content source's
     // content channel at runtime (in an ActionUI host: states["content"] via setElementState /
     // setElementStateFromString), observed here. `lastLoadedContent` dedups so a given content
     // value loads once. Persistence flows the other way, per finalized entry, through the host
@@ -1571,7 +1571,7 @@ final class ChatStore: ObservableObject {
             Task { await transport?.send(.cancel) }
         }
         // Seed the transport's wire history from the loaded transcript so typing continues the
-        // conversation WITH its prior turns as context (P0-2 continue-in). An empty transcript
+        // conversation WITH its prior turns as context (continue-in seam). An empty transcript
         // (New Chat clear) resets the wire; a deferred directive only marks the context pending.
         // No-op if the transport is not built yet.
         primeTransportFromItems()

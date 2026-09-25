@@ -4,7 +4,7 @@ package com.abracode.chatview
 // fake content/config source), and the test-only ChatEvent codec used by the fixture-scenario replay. The codec is
 // written against Fixtures/README.md (the contract), NOT against the Swift emitter's source.
 //
-// Coroutine model (plan section 5): the store launches its `Task { ... }` equivalents on an injected CoroutineScope.
+// Coroutine model: the store launches its `Task { ... }` equivalents on an injected CoroutineScope.
 // - Synchronous routing / restore / config tests use inertScope(): a StandardTestDispatcher that is never advanced,
 //   so the queued send tasks and the 50 ms flush never run and the test asserts the store's synchronous state.
 // - Async behavior / end-to-end tests wrap the body in runTest and give the store CoroutineScope(

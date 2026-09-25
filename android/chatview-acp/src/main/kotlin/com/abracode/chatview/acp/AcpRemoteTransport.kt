@@ -1,7 +1,7 @@
 package com.abracode.chatview.acp
 
 // Port of Sources/ACP/ACPRemoteTransport.swift - the `acp-remote` transport: ChatView driving an ACP agent that runs
-// somewhere else, over the bridge protocol (Private/ChatView_Remote_Agent_Plan.md section 7).
+// somewhere else, over the bridge protocol.
 //
 // The shape differs from a local transport in exactly one way, and everything else follows from it: the connection
 // is not the session. A socket can drop and come back many times inside one conversation, and the agent keeps
@@ -9,7 +9,7 @@ package com.abracode.chatview.acp
 //
 //  - A turn is NEVER ended because the socket died (invariant I9). A dropped socket says nothing about a turn that
 //    is still running bridge-side; the truth arrives with the replay. The composer is gated by connection state.
-//  - Every transcript id is derived from the bridge's sequence number (plan 4.5), so two devices - and the same
+//  - Every transcript id is derived from the bridge's sequence number, so two devices - and the same
 //    device after a restart - render byte-identical ids without any reconciliation protocol.
 //  - `lastSeq` advances only AFTER an entry is fully processed (invariant I7), so a reattach asks for exactly what
 //    was missed. At-least-once delivery plus idempotent processing.
@@ -225,7 +225,7 @@ class AcpRemoteTransport(
         token = config.string("token") ?: ""
         tokenFitsAHeader = token.all { it.code in 0x20..0x7e }
         if (token.isNotEmpty() && !tokenFitsAHeader) {
-            // Not fatal: the bridge authenticates the copy inside `initialize` (plan 4.6), and the header exists
+            // Not fatal: the bridge authenticates the copy inside `initialize`, and the header exists
             // for proxies. Building it would throw, and a throw here would take the whole connect down.
             logger.log(
                 "acp-remote: the token has characters an HTTP header cannot carry (a stray newline?); sending it "
@@ -237,7 +237,7 @@ class AcpRemoteTransport(
         requestedCwd = config.string("cwd")
         handshakeTimeout = clampedTimeout(config.double("handshakeTimeoutSeconds"), 15.0)
 
-        // The cold-launch cursor (plan 4.2a). Only meaningful against the session id it was minted for: with "new"
+        // The cold-launch cursor. Only meaningful against the session id it was minted for: with "new"
         // or "latest" there is nothing for it to line up with, and a cursor applied to the wrong session silently
         // skips that session's history.
         configuredResumeAfterSeq = if (!config.settings.containsKey("resumeAfterSeq")) {
@@ -944,7 +944,7 @@ class AcpRemoteTransport(
         emit(ChatEvent.Error("The remote agent session has ended ($reason)", recoverable = false))
     }
 
-    // MARK: - Segmentation (ids derived from seq, per plan 4.5)
+    // MARK: - Segmentation (ids derived from seq)
 
     private fun appendMessageChunk(text: String, role: ChatRole, seq: Int) {
         if (text.isEmpty()) {
@@ -1009,7 +1009,7 @@ class AcpRemoteTransport(
         }
     }
 
-    // MARK: - Cold-launch checkpoint (plan 4.2a)
+    // MARK: - Cold-launch checkpoint
 
     private fun emitCheckpointIfPossible() {
         val (session, seq) = synchronized(lock) { this.sessionID to this.lastSeq }

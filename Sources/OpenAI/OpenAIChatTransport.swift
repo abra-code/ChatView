@@ -10,7 +10,7 @@
 // store, router, views - is unchanged from the other transports. It lives in its own
 // module (ActionUIChatOpenAI) and registers through the transport registry.
 //
-// Design (from the wrap-up plan, P0-1):
+// Design:
 //   - The transport owns the conversation array (role/content messages): the wire is
 //     stateless, so ChatStore stays a pure event reducer. On a prompt it appends the
 //     user message, POSTs stream:true, parses SSE `data:` lines, and emits the existing
@@ -142,7 +142,7 @@ final class OpenAIChatTransport: ChatTransport, @unchecked Sendable {
         }
     }
 
-    /// Replaces the wire history with a restored transcript's messages (P0-2 continue seam),
+    /// Replaces the wire history with a restored transcript's messages (continue seam),
     /// mapping ChatRole -> OpenAI wire role: local/remote -> "user", agent -> "assistant",
     /// system -> "system"; empty-text items are dropped. Bumps `generation` and cancels any
     /// in-flight turn so a stream finalizing after the swap cannot append into the freshly

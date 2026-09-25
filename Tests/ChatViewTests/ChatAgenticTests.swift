@@ -1,6 +1,6 @@
 // Tests/ChatViewTests/ChatAgenticTests.swift
 //
-// Unit tests for the M3 agentic layer: the store's router reductions (tool-call
+// Unit tests for the agentic layer: the store's router reductions (tool-call
 // cards mutating in place, thoughts closing when the next item begins, the
 // permission queue lifecycle, hidden-surface dropping), the `surfaces` config
 // parsing / validation, and the local transport's scripted "agentic" turn -
@@ -178,7 +178,7 @@ final class ChatRouterTests: XCTestCase {
         XCTAssertTrue(store.items.isEmpty, "hidden surfaces must drop their items entirely")
     }
 
-    // MARK: M5 part 1 - plan / usage / session options
+    // MARK: - plan / usage / session options
 
     func testPlanReplacesWholesale() {
         let store = makeStore()

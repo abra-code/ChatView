@@ -166,7 +166,7 @@ enum ACPWire {
     }
 
     /// Splits a tool call's content array into its text (regular ContentBlocks) and the
-    /// first diff. Terminal content is noted in the text (the live terminal panel is M5).
+    /// first diff. Terminal content is noted in the text (there is no live terminal panel).
     private static func parseToolCallContent(_ content: Any?) -> (text: String, diff: ToolCallDiff?) {
         guard let entries = content as? [[String: Any]] else {
             return ("", nil)

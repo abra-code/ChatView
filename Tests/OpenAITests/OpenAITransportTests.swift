@@ -301,7 +301,7 @@ final class OpenAITransportTests: XCTestCase {
         XCTAssertTrue(history.isEmpty, "a hard failure with no reply drops the user message so retries do not accumulate back-to-back user turns")
     }
 
-    // MARK: - Prime history (P0-2 continue-in seam)
+    // MARK: - Prime history (continue-in seam)
 
     func testPrimeHistoryReplacesWireAndMapsRoles() throws {
         let transport = try makeTransport()

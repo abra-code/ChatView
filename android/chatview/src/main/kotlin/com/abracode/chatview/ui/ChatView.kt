@@ -3,7 +3,7 @@ package com.abracode.chatview.ui
 // A6/A7 Compose chat view - the public entry point. Owns the ChatStore lifecycle, derives the per-item layout
 // (run grouping + day separators + row contexts), renders the keyed LazyColumn (paging sentinel, load-earlier
 // header, item rows, typing / awaiting indicators, bottom sentinel), and runs the direct-signal scroll-pin
-// sampler (plan divergence D5): a bottom-sentinel + drag-interaction detector decides pinning, pinned follow
+// sampler (deliberately different from the Swift version): a bottom-sentinel + drag-interaction detector decides pinning, pinned follow
 // chases new content non-animated, prepends hold position, a generation bump resets, near-top requests paging,
 // and a jump-to-latest pill + reply-jump highlight round it out. The composer (A7) sits below, unless readOnly.
 
