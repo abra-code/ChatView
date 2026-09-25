@@ -18,6 +18,7 @@
 // connects to.
 
 import Foundation
+import RichText
 
 public struct ChatConfiguration {
 
@@ -41,6 +42,20 @@ public struct ChatConfiguration {
         case `return`
         case modifierReturn = "modifier-return"
         case shiftReturnNewline = "shift-return-newline"
+    }
+
+    /// When images in message Markdown are fetched from the network (http / https). A fetch tells the
+    /// image's host that the message was shown, and the URL can carry anything the author put in it - so a
+    /// model or agent writing `![](https://host/?d=...)` can send data out of the Mac the moment its message
+    /// renders. `automatic` (default): fetched at once, as before. `onClick`: a placeholder names the
+    /// image's host until the reader clicks it. `never`: not fetched. `data:` images always show. A
+    /// present but unrecognized value parses as `onClick`, so a typo never turns the protection off.
+    /// Applies to every Markdown surface of the transcript: messages, thoughts, tool-call details and
+    /// captions.
+    public enum RemoteImages: String, Sendable {
+        case automatic
+        case onClick = "on-click"
+        case never
     }
 
     /// Per-role appearance. `side` drives layout only in `dual` alignment; in `single`
@@ -130,6 +145,8 @@ public struct ChatConfiguration {
 
     public let surfaces: Surfaces
 
+    public let remoteImages: RemoteImages
+
     // Session transcript seam.
     public let readOnly: Bool           // history-viewer mode: no composer / menus, no transport start
     public let showFindBar: Bool        // the transcript find bar (Cmd-F); a host-injected `search` query still highlights when off
@@ -173,6 +190,7 @@ public struct ChatConfiguration {
                 placeholder: String = "Message",
                 submitOn: SubmitPolicy = .return,
                 surfaces: Surfaces = Surfaces(),
+                remoteImages: RemoteImages = .automatic,
                 readOnly: Bool = false,
                 showFindBar: Bool = true,
                 initialContent: Any? = nil,
@@ -190,6 +208,7 @@ public struct ChatConfiguration {
         self.placeholder = placeholder
         self.submitOn = submitOn
         self.surfaces = surfaces
+        self.remoteImages = remoteImages
         self.readOnly = readOnly
         self.showFindBar = showFindBar
         self.initialContentRaw = initialContent
@@ -244,6 +263,20 @@ public struct ChatConfiguration {
             diffs: diffsMode
         )
 
+        // Absent means automatic, the old behavior. PRESENT but unrecognized - a typo such as "onClick",
+        // "off" or false - means on-click: whoever set the key meant to restrict fetching, and a typo must
+        // not quietly turn the protection off.
+        if let remoteImagesRaw = dictionary["remoteImages"] {
+            if let parsed = (remoteImagesRaw as? String).flatMap(RemoteImages.init(rawValue:)) {
+                remoteImages = parsed
+            } else {
+                logger.log("Chat remoteImages '\(remoteImagesRaw)' is not automatic, on-click or never; using on-click", .warning)
+                remoteImages = .onClick
+            }
+        } else {
+            remoteImages = .automatic
+        }
+
         readOnly = (dictionary["readOnly"] as? Bool) ?? false
         showFindBar = (dictionary["showFindBar"] as? Bool) ?? true
         // A pre-populated transcript in `content` - a preview / testing convenience only.
@@ -278,5 +311,16 @@ public struct ChatConfiguration {
     public func style(for role: ChatRole) -> RoleStyle {
         roles[role.rawValue] ?? Self.defaultRoles[role.rawValue]
             ?? RoleStyle(side: "leading", label: "", tint: "secondary")
+    }
+}
+
+extension ChatConfiguration.RemoteImages {
+    /// The RichText policy that implements this setting.
+    var richText: RichTextRemoteImages {
+        switch self {
+        case .automatic: return .automatic
+        case .onClick: return .onClick
+        case .never: return .never
+        }
     }
 }

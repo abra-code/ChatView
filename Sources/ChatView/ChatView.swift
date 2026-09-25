@@ -462,12 +462,14 @@ public struct ChatView: View {
                        highlights: store.find.highlights(for: message.id, style: chatFindStyle))
         case .thought(let thought):
             ThoughtRow(thought: thought, initiallyExpanded: config.surfaces.thoughts != .collapsed,
-                       highlights: store.find.highlights(for: thought.id, style: chatFindStyle))
+                       highlights: store.find.highlights(for: thought.id, style: chatFindStyle),
+                       remoteImages: config.remoteImages)
         case .toolCall(let call):
             ToolCallRow(call: call, compact: config.surfaces.toolCalls == .collapsed,
                         showsDiff: config.surfaces.diffs != .hidden,
                         titleFind: store.find.ranges(for: call.id, field: .title),
-                        detailHighlights: store.find.highlights(for: call.id, style: chatFindStyle))
+                        detailHighlights: store.find.highlights(for: call.id, style: chatFindStyle),
+                        remoteImages: config.remoteImages)
         case .image(let item):
             ImageRow(role: item.role, image: item.image, config: config)
         case .system(let id, let text):
@@ -1146,7 +1148,7 @@ private struct MessageRow: View {
         if message.text.isEmpty && message.isStreaming {
             Text("\u{2026}").foregroundStyle(.secondary)
         } else {
-            RichText(markdown: message.text).findHighlights(highlights)
+            RichText(markdown: message.text).findHighlights(highlights).remoteImages(config.remoteImages.richText)
         }
     }
 
@@ -1163,11 +1165,14 @@ private struct MessageRow: View {
 private struct ThoughtRow: View {
     let thought: ChatMessage
     let highlights: RichTextHighlights?
+    let remoteImages: ChatConfiguration.RemoteImages
     @State private var expanded: Bool
 
-    init(thought: ChatMessage, initiallyExpanded: Bool, highlights: RichTextHighlights? = nil) {
+    init(thought: ChatMessage, initiallyExpanded: Bool, highlights: RichTextHighlights? = nil,
+         remoteImages: ChatConfiguration.RemoteImages) {
         self.thought = thought
         self.highlights = highlights
+        self.remoteImages = remoteImages
         _expanded = State(initialValue: initiallyExpanded)
     }
 
@@ -1177,7 +1182,8 @@ private struct ThoughtRow: View {
                 if thought.text.isEmpty && thought.isStreaming {
                     Text("\u{2026}").foregroundStyle(.secondary)
                 } else {
-                    RichText(markdown: thought.text).findHighlights(highlights).opacity(0.75)
+                    RichText(markdown: thought.text).findHighlights(highlights)
+                        .remoteImages(remoteImages.richText).opacity(0.75)
                 }
             }
             .padding(.top, 4)
@@ -1616,6 +1622,7 @@ private struct ToolCallRow: View {
     let showsDiff: Bool   // surfaces.diffs != .hidden
     let titleFind: (ranges: [NSRange], current: Int?)?
     let detailHighlights: RichTextHighlights?
+    let remoteImages: ChatConfiguration.RemoteImages
     @State private var expanded = false
 
     var body: some View {
@@ -1675,6 +1682,7 @@ private struct ToolCallRow: View {
     private var detail: some View {
         if !call.contentText.isEmpty {
             RichText(markdown: ToolDetailText.capped(call.contentText)).findHighlights(detailHighlights)
+                .remoteImages(remoteImages.richText)
         }
         if showsDiff, let diff = call.diff {
             Text(diff.path)

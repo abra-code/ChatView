@@ -367,6 +367,7 @@ private struct DualMessageRow: View {
             // .hug so a dual bubble sizes to its text (up to the column width) instead of filling the
             // column like a v1 full-width row. The enclosing bubble's .frame(maxWidth:) is the cap.
             RichText(markdown: message.text).findHighlights(highlights).widthBehavior(.hug)
+                .remoteImages(config.remoteImages.richText)
         }
     }
 
@@ -492,6 +493,7 @@ private struct DualImageRow: View {
             VStack(alignment: .leading, spacing: 0) {
                 picture
                 RichText(markdown: caption).findHighlights(highlights).widthBehavior(.hug)
+                    .remoteImages(config.remoteImages.richText)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
             }
@@ -637,6 +639,7 @@ private struct DualFileRow: View {
             }
             if let caption {
                 RichText(markdown: caption).findHighlights(highlights).widthBehavior(.hug)
+                    .remoteImages(config.remoteImages.richText)
             }
         }
         .padding(.horizontal, 10)

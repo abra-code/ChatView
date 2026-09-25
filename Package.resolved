@@ -1,5 +1,5 @@
 {
-  "originHash" : "7e4fc6a27d6c84de24cee27bf3e0cbe051a450da2aaee1069c5d4c29f1a6ce37",
+  "originHash" : "4a6b43c1f71656f2ead819749ebd89de20d2ffa3fb26c741d1ae51029d19202d",
   "pins" : [
     {
       "identity" : "asyncimagecache",
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/abra-code/RichText",
       "state" : {
-        "revision" : "29b5008857aaf7a77e6120fd399d501ff290bbec",
-        "version" : "0.2.3"
+        "revision" : "9646a605b388aa5e34ad19b92788aaef24a4b4f8",
+        "version" : "0.2.4"
       }
     }
   ],
