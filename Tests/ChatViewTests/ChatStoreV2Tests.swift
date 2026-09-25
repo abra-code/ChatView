@@ -1,6 +1,6 @@
 // Tests/ChatViewTests/ChatStoreV2Tests.swift
 //
-// P3 tests for the person-to-person (v2) store layer: the new event routing (upsert, status
+// Tests for the person-to-person (v2) store layer: the new event routing (upsert, status
 // change + watermark ladder, reactions, edit, delete, member / call append, file progress,
 // typing with a virtual-clock expiry, participants, history prepend) and the store-initiated
 // behaviors (paging trigger, read-mark debounce, outgoing-typing throttle) plus the

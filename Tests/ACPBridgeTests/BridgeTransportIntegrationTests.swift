@@ -4,7 +4,7 @@
 // URLSession socket) driving a genuine `ACPBridge` (real NWListener) that owns a genuine
 // stdio agent subprocess. Nothing is scripted at the wire.
 //
-// This is the test that matters most in phase 2, because the unit tests on each side are
+// This is the test that matters most end-to-end, because the unit tests on each side are
 // written against the same document rather than against each other: `ScriptedBridge` in
 // ChatACPRemoteTests is a reading of the wire spec, and the bridge is a separate reading of
 // it. Two independent readings agreeing is worth far more than either one passing alone.
@@ -313,7 +313,7 @@ final class BridgeTransportIntegrationTests: XCTestCase {
             }
         }
         // Attaching from 0 replays turn one. The second device renders one item MORE than the
-        // first did - the user message. That is a documented asymmetry, not a defect:
+        // first did - the user message. That is a deliberate asymmetry, not a defect:
         // the originating device already showed its own send through the store's optimistic
         // append (which is not a transport event at all) and suppresses the echo, while every
         // other view of that message comes off the log as acpr-m-<seq>.
@@ -357,7 +357,7 @@ final class BridgeTransportIntegrationTests: XCTestCase {
         await transport.send(.prompt(text: "go"))
 
         events.wait("the session-ended error") { !events.nonRecoverableErrors.isEmpty }
-        // I8 all the way through to the client: the turn must end BEFORE the session does, or
+        // This holds all the way through to the client: the turn must end BEFORE the session does, or
         // the composer never re-enables.
         XCTAssertTrue(events.hasTurnEnd(stopReason: "error"),
                       "every accepted turn ends, even when the agent dies mid-turn")

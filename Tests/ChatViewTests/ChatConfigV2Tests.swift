@@ -1,6 +1,6 @@
 // Tests/ChatViewTests/ChatConfigV2Tests.swift
 //
-// P2 tests for the person-to-person / group (v2) config layer: the new appearance flags
+// Tests for the person-to-person / group (v2) config layer: the new appearance flags
 // (showTimestamps with its alignment-conditional default, showAvatars, showDeliveryStatus)
 // and the `features` gate object. The guardrail: a v1 (single-alignment) configuration
 // keeps its exact defaults, so these are inert unless a host opts in. (The ActionUI

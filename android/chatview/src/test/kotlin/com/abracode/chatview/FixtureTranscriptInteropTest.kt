@@ -9,7 +9,7 @@ package com.abracode.chatview
 // - STRICT (Double-free goldens only): canonical sorted-keys string equality, to catch key-spelling drift with byte
 //   precision. transcript-mixed-agentic (ChatImage pixels, UsageInfo cost) and the two P2P transcripts (the seeded
 //   photo's pixels) carry Double-typed model fields, which Swift renders as `800` and Kotlin as `800.0`, so the
-//   strict check is applied to the Double-free goldens only (judged by model types per section 8).
+//   strict check is applied to the Double-free goldens only (judged by model types).
 
 import kotlinx.serialization.json.JsonElement
 import org.junit.Assert.assertEquals

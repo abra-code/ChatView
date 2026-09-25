@@ -8,8 +8,8 @@
 //   - outgoing-typing throttle (compare `now` against the last-sent instant).
 //
 // The production scheduler uses the wall clock and Task.sleep; the test scheduler advances
-// virtual time and fires due callbacks synchronously (see ChatStore's P3 tests). This mirrors
-// the coalescing timer's intent but is injectable, per the plan's requirement that the typing
+// virtual time and fires due callbacks synchronously (see ChatStoreV2Tests). This mirrors
+// the coalescing timer's intent but is injectable, so that the typing
 // expiry / debounce / throttle all run on an injectable clock.
 
 import Foundation

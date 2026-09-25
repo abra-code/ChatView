@@ -30,7 +30,7 @@ private func fail(_ message: String) -> Never {
 private let usage = """
 usage: chatview-acp-bridge --config <path.json> [--show-token] [--print-config-snippet]
 
-  --config <path>           REQUIRED. The bridge config (see the acp-remote plan, section 8.2).
+  --config <path>           REQUIRED. The bridge config.
   --show-token              Print the resolved bridge token and exit.
   --print-config-snippet    Print a ready-to-paste ChatView transport config and exit.
 """

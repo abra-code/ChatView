@@ -1,6 +1,6 @@
 // Tests/ChatViewTests/ChatTranscriptLayoutTests.swift
 //
-// P4 tests for the pure transcript-layout helpers: RFC 3339 parsing, run grouping (same sender
+// Tests for the pure transcript-layout helpers: RFC 3339 parsing, run grouping (same sender
 // within a 60 s window, broken by sender change / time gap / a non-groupable event), and
 // day-separator placement between calendar days. Deterministic (a fixed UTC calendar).
 

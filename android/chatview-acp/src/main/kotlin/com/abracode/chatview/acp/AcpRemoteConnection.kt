@@ -8,11 +8,11 @@ package com.abracode.chatview.acp
 //
 // Two invariants carried over from the stdio transport, both learned the hard way there:
 //
-// I1 - a handshake watchdog must close the SOCKET, never race the request. The transport arms its watchdog around
-//      the connect sequence and closes this connection on expiry; the parked request then fails through the normal
-//      error path instead of being abandoned by a timeout wrapper.
-// I2 - close-fails-everything, exactly once. A connection object is single-use: one per attempt. Reconnect logic
-//      lives OUTSIDE it, in the transport.
+// - a handshake watchdog must close the SOCKET, never race the request. The transport arms its watchdog around
+//   the connect sequence and closes this connection on expiry; the parked request then fails through the normal
+//   error path instead of being abandoned by a timeout wrapper.
+// - close-fails-everything, exactly once. A connection object is single-use: one per attempt. Reconnect logic
+//   lives OUTSIDE it, in the transport.
 //
 // Keepalive is OkHttp's job here rather than a task of our own: the client the transport builds sets pingInterval,
 // and OkHttp fails the connection when a pong does not come back in time. That covers what the Swift file's ping
@@ -121,7 +121,7 @@ class AcpRemoteConnection(
     /** Internal for tests: the frame dispatcher, drivable without a server. */
     fun handleFrame(text: String) {
         if (synchronized(lock) { closed }) {
-            // A closed connection is done, permanently (I2). OkHttp can deliver a frame that was already in the
+            // A closed connection is done, permanently. OkHttp can deliver a frame that was already in the
             // reader's hands when close() ran, and routing it would push events into a transport that has torn
             // down - or, after a reconnect, into a session state that a newer connection now owns.
             return
@@ -165,7 +165,7 @@ class AcpRemoteConnection(
 
     private fun handleInboundRequest(method: String, id: JsonElement, params: JsonObject) {
         // Its own coroutine: a permission request parks until the user answers, and the frame loop must keep
-        // delivering the session updates that the permission's own tool card depends on (I4).
+        // delivering the session updates that the permission's own tool card depends on.
         scope.launch {
             val result = onRequest(method, params)
             if (result != null) {
@@ -217,8 +217,8 @@ class AcpRemoteConnection(
                 return@suspendCancellableCoroutine
             }
             // A cancelled caller must not leave its slot behind: the answer would then resolve nothing and the map
-            // would grow for the connection's life. Closing the socket remains the way a watchdog ends a wait (I1),
-            // and close() fails every remaining waiter (I2).
+            // would grow for the connection's life. Closing the socket remains the way a watchdog ends a wait,
+            // and close() fails every remaining waiter.
             continuation.invokeOnCancellation { synchronized(lock) { pending.remove(requestID) } }
             send(
                 buildJsonObject {
@@ -251,7 +251,7 @@ class AcpRemoteConnection(
     }
 
     /**
-     * Closes once and fails every pending request (I2). Idempotent: the socket's own close callback and an explicit
+     * Closes once and fails every pending request. Idempotent: the socket's own close callback and an explicit
      * close race constantly, and only one of them may notify.
      */
     fun close(error: Throwable? = null) {

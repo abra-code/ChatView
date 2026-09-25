@@ -5,7 +5,7 @@
 //
 // `ScriptedBridge` below is written FROM the wire spec rather than from the bridge's
 // implementation, deliberately: it is the first conformance check, and the
-// phase 2.3 integration tests then run the same transport against the REAL bridge. If the two
+// bridge integration tests then run the same transport against the REAL bridge. If the two
 // ever disagree, one of them is wrong about the spec and that is exactly what we want to find.
 //
 // No `#if os(macOS)`: this whole file must run wherever the transport does.
@@ -172,7 +172,7 @@ private final class ScriptedSocketFactory: ACPRemoteSocketFactory, @unchecked Se
 
 // MARK: - A bridge written from the wire spec
 
-/// Answers the client's requests per section 7 and lets a test push notifications.
+/// Answers the client's requests per the wire spec and lets a test push notifications.
 private final class ScriptedBridge: @unchecked Sendable {
 
     private let lock = NSLock()
@@ -457,7 +457,7 @@ final class ChatACPRemoteConnectionTests: XCTestCase {
             closeCount.bump()
         })
 
-        // Never answered; the close is what resolves it (invariant I2).
+        // Never answered; the close is what resolves it.
         async let pending = connection.request("initialize", [:])
         try? await Task.sleep(nanoseconds: 50_000_000)
         connection.close()
@@ -578,7 +578,7 @@ final class ChatACPRemoteTransportTests: XCTestCase {
 
         XCTAssertEqual(collector.log.prefix(4).map { $0 },
                        ["state:connecting", "ready:sess-1", "info:sess-1:resumed=false", "state:connected"],
-                       "I6: the session is announced before anything else can arrive")
+                       "the session is announced before anything else can arrive")
         await transport.stop()
     }
 
@@ -612,7 +612,7 @@ final class ChatACPRemoteTransportTests: XCTestCase {
             collector.log.contains { $0.hasPrefix("error:false:") }
         }
         XCTAssertTrue(factory.socket(0)?.isClosed ?? false,
-                      "I1: the watchdog closes the SOCKET; racing the request in a task group deadlocks")
+                      "the watchdog closes the SOCKET; racing the request in a task group deadlocks")
         await transport.stop()
     }
 
@@ -721,7 +721,7 @@ final class ChatACPRemoteTransportTests: XCTestCase {
                       ["update": ["sessionUpdate": "agent_message_chunk",
                                   "content": ["type": "text", "text": "once"]]])
         collector.waitFor("the first delivery") { collector.log.contains { $0.hasSuffix(":once") } }
-        // At-least-once delivery plus idempotent processing (I7): re-delivery must be a no-op.
+        // At-least-once delivery plus idempotent processing: re-delivery must be a no-op.
         bridge.pushAt(socket, seq: 1, "session/update",
                       ["update": ["sessionUpdate": "agent_message_chunk",
                                   "content": ["type": "text", "text": "once"]]])
@@ -762,7 +762,7 @@ final class ChatACPRemoteTransportTests: XCTestCase {
         }
         XCTAssertEqual(bridge.attachCursor, 1, "the reattach must resume from lastSeq, not from 0")
         XCTAssertTrue(collector.log.contains("state:reconnecting"))
-        // I9: the drop itself must NOT have ended the turn - only the replayed turn_ended does.
+        // The drop itself must NOT have ended the turn - only the replayed turn_ended does.
         let endIndex = collector.log.firstIndex { $0.hasPrefix("end:") }
         let missedIndex = collector.log.firstIndex { $0.hasSuffix(":missed") }
         if let endIndex, let missedIndex {
@@ -920,7 +920,7 @@ final class ChatACPRemoteTransportTests: XCTestCase {
         await transport.start()
         collector.waitFor("connected") { collector.log.contains("state:connected") }
 
-        // I1's other half: the watchdog must be RETIRED on success. Without that it closes every
+        // The watchdog's other half: it must be RETIRED on success. Without that it closes every
         // healthy connection once the timeout elapses, which in production looks like the agent
         // dropping the user mid-conversation.
         try? await Task.sleep(nanoseconds: 700_000_000)
@@ -955,7 +955,7 @@ final class ChatACPRemoteTransportTests: XCTestCase {
         collector.waitFor("the latched cancel to reach the wire", timeout: 10) {
             !second.frames(method: "session/cancel").isEmpty
         }
-        // I3: Stop must still stop, even when it was pressed with no connection.
+        // Stop must still stop, even when it was pressed with no connection.
         XCTAssertFalse(second.frames(method: "session/cancel").isEmpty)
         await transport.stop()
     }

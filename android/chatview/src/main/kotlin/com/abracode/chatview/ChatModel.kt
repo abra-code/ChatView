@@ -885,7 +885,7 @@ sealed interface ChatEvent {
      * A resumable transport reporting how far the host's persisted transcript now reaches. The store forwards it as
      * one [ChatHostEvent.ResumeCheckpoint]; it is not a transcript item and never appears in `items`. Emitted only at
      * turn boundaries, where the transcript is quiescent, so that "what the host has stored" and "this cursor"
-     * describe the same instant; see the acp-remote plan's section 4.2a.
+     * describe the same instant.
      *
      * REQUIRES [ChatConfiguration.emitsEntryEvents]. A cursor is only meaningful next to the transcript it was minted
      * against, and [ChatHostEvent.Entry] is how that transcript reaches the host, so a store that is not emitting

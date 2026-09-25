@@ -49,7 +49,7 @@ struct DualRowActions {
     var jumpTo: (String) -> Void = { _ in }
     var cancelTransfer: (String) -> Void = { _ in }
 
-    /// The fixed quick-reaction row shown at the top of the context menu (Unicode order per the plan):
+    /// The fixed quick-reaction row shown at the top of the context menu (in this order):
     /// thumbs up, heart, tears of joy, open mouth, crying, folded hands.
     static let quickReactions = ["\u{1F44D}", "\u{2764}\u{FE0F}", "\u{1F602}", "\u{1F62E}", "\u{1F622}", "\u{1F64F}"]
 }
@@ -774,7 +774,7 @@ struct TypingIndicatorRow: View {
     }
 }
 
-// MARK: - Reply quote (display; the tap-to-scroll + compose banner are P5)
+// MARK: - Reply quote (display)
 
 private struct ReplyQuote: View {
     let reply: ReplyRef
@@ -1044,7 +1044,7 @@ struct AvatarView: View {
 
 // MARK: - Centered caption + day separator
 
-/// A centered caption row (system notice, and the visual family member / call events will reuse in P6).
+/// A centered caption row (system notice, and the visual family member / call events reuse).
 struct CenteredCaption: View {
     let text: String
     let systemImage: String?

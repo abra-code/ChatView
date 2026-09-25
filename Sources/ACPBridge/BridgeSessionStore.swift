@@ -243,8 +243,8 @@ package final class BridgeSessionStore: @unchecked Sendable {
 
     /// Clears the active turn, reporting whether THIS call is the one that ended it.
     ///
-    /// The return value is what makes invariant I8 ("exactly one turn_ended per accepted
-    /// turn") enforceable: several paths race to end the same turn - the prompt task
+    /// The return value is what makes "exactly one turn_ended per accepted
+    /// turn" enforceable: several paths race to end the same turn - the prompt task
     /// resolving, the agent dying, a log overflow - and only the winner may log the terminal
     /// entry. Without this the agent-death path and the prompt-task path both logged one, and
     /// the second landed AFTER session_ended.

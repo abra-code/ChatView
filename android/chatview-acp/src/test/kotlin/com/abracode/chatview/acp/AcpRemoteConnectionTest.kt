@@ -178,7 +178,7 @@ class AcpRemoteConnectionTest {
         var closeCount = 0
         val connection = connect(socket, this, onClose = { closeCount += 1 })
 
-        // Never answered; the close is what resolves it (invariant I2). The failure is captured inside the
+        // Never answered; the close is what resolves it. The failure is captured inside the
         // coroutine: an `async` that throws cancels its parent scope in Kotlin, which would take the test with it.
         val pending = async { runCatching { connection.request("initialize", JsonObject(emptyMap())) } }
         testScheduler.advanceUntilIdle()

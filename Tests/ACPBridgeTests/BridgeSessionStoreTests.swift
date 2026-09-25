@@ -1,8 +1,8 @@
 // Tests/ACPBridgeTests/BridgeSessionStoreTests.swift
 //
 // The store is where every ordering guarantee the remote transport depends on actually
-// lives, so these tests are the ones that matter most in phase 1. They pin invariant I5
-// (seq assignment, log write, and fan-out are one critical section) and the attach/replay
+// lives, so these tests are the ones that matter most for the bridge. They pin the rule that
+// seq assignment, log write, and fan-out are one critical section, and the attach/replay
 // contract that `afterSeq` rests on.
 
 #if os(macOS)
@@ -59,7 +59,7 @@ final class BridgeSessionStoreTests: XCTestCase {
         BridgeSessionStore(logDirectory: directory, maxLogEntriesPerSession: maxEntries, logger: SilentLogger())
     }
 
-    // MARK: - I5
+    // MARK: - One critical section per append
 
     func testSeqsAreMonotonicAndGaplessUnderConcurrentAppends() async {
         let store = makeStore()
@@ -306,7 +306,7 @@ final class BridgeSessionStoreTests: XCTestCase {
         XCTAssertFalse(contents[0].contains("/"), "a hostile session id must not become a path")
     }
 
-    /// The I5 regression test. The earlier suite never had concurrent appends racing a LIVE
+    /// The one-critical-section regression test. The earlier suite never had concurrent appends racing a LIVE
     /// subscriber, so dropping the lock between "assign seq + write" and "fan out" passed
     /// every test. This one fails against that mutation: the sink sees the interleaving.
     func testConcurrentAppendsReachALiveSubscriberInLogOrder() async {
@@ -380,7 +380,7 @@ final class BridgeSessionStoreTests: XCTestCase {
         let turn = store.beginTurn(sessionID: "s1")!
         XCTAssertTrue(store.endTurn(sessionID: "s1", turn: turn), "the first caller ends the turn")
         XCTAssertFalse(store.endTurn(sessionID: "s1", turn: turn),
-                       "a second caller must not also log a terminal entry (invariant I8)")
+                       "a second caller must not also log a terminal entry")
     }
 
     func testDuplicateSessionIDIsRefused() {

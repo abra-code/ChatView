@@ -3,7 +3,7 @@
 // An optional live integration test that drives the REAL OpenAIChatTransport (its default
 // URLSession, over the real network) against a running OpenAI-compatible server. Skipped
 // unless OPENAI_LIVE_BASEURL is set, so the normal suite never depends on a server. This is
-// the plan's "live validation" step made repeatable in one command:
+// a live validation made repeatable in one command:
 //
 //   # llama-server (AIChat.app) or any OpenAI-compatible endpoint:
 //   OPENAI_LIVE_BASEURL=http://127.0.0.1:8080/v1 swift test --filter OpenAILiveTests

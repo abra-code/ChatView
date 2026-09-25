@@ -84,7 +84,7 @@ let package = Package(
         .executableTarget(name: "chatview-acp-bridge", dependencies: ["ACPBridgeCore"], path: "Sources/ACPBridgeCLI"),
         .testTarget(name: "ChatViewTests", dependencies: ["ChatView"], path: "Tests/ChatViewTests"),
         // The demo screen is the REFERENCE host implementation of the checkpoint contract, and
-        // the plan calls a non-atomic host the one failure the design cannot close in code. A
+        // a non-atomic host is the one failure the design cannot close in code. A
         // reference that is only checked by eye is not a reference, so its persistence is tested.
         .testTarget(name: "ChatViewDemoSharedTests", dependencies: ["ChatViewDemoShared", "ChatView"],
                     path: "Tests/DemoSharedTests"),

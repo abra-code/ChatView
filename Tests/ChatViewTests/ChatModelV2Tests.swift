@@ -1,6 +1,6 @@
 // Tests/ChatViewTests/ChatModelV2Tests.swift
 //
-// P1 tests for the additive person-to-person / group (v2) model layer: the new ChatMessage
+// Tests for the additive person-to-person / group (v2) model layer: the new ChatMessage
 // fields (sender identity, timestamp, delivery status, reactions, edited, replyTo, tombstone),
 // the new ChatItem cases (memberEvent, callEvent, file / voice), the transcript `participants`
 // roster + version handling, and the ChatTransportCapabilities defaults. The cardinal constraint

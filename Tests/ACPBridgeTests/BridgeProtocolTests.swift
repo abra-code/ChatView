@@ -3,7 +3,7 @@
 // End-to-end tests for the bridge: a real fake ACP agent as a subprocess (shell scripts in
 // the ChatACPLaunchTests idiom), a real NWListener, and a real URLSessionWebSocketTask
 // client. Nothing here is mocked at the wire, so a passing run is a conformance check of
-// section 7 of the plan rather than a check that our fakes agree with each other.
+// the wire spec rather than a check that our fakes agree with each other.
 //
 // Every wait is deadline-bounded: the failures these tests exist to catch (a turn that
 // never ends, a permission that never resolves, a replay that never arrives) are all
@@ -293,7 +293,7 @@ final class BridgeProtocolTests: XCTestCase {
                        "everything before a successful initialize must fail closed")
     }
 
-    // MARK: - Turn lifecycle (item 1.4, invariant I8)
+    // MARK: - Turn lifecycle
 
     func testPromptTurnLifecycle() throws {
         let port = try startBridge(script: agentScript())
@@ -340,7 +340,7 @@ final class BridgeProtocolTests: XCTestCase {
         XCTAssertEqual((response?["error"] as? [String: Any])?["code"] as? Int, -32001)
     }
 
-    /// I8: a turn the bridge accepted always ends, even when the agent dies mid-turn, and
+    /// A turn the bridge accepted always ends, even when the agent dies mid-turn, and
     /// turn_ended is logged BEFORE session_ended.
     func testAgentDeathEndsTheTurnBeforeTheSession() throws {
         // This agent answers initialize and session/new, then exits on the first prompt.
@@ -375,7 +375,7 @@ final class BridgeProtocolTests: XCTestCase {
             return XCTFail("expected both turn_ended and session_ended, got \(methods)")
         }
         XCTAssertLessThan(turnEnded, sessionEnded,
-                          "I8: a client that never sees turn_ended keeps its composer disabled forever")
+                          "a client that never sees turn_ended keeps its composer disabled forever")
         XCTAssertEqual(client.received(method: "bridge/turn_ended").first?["stopReason"] as? String, "error")
         XCTAssertEqual(client.received(method: "bridge/session_ended").first?["reason"] as? String, "agent_exit")
     }
@@ -410,7 +410,7 @@ final class BridgeProtocolTests: XCTestCase {
                        "a watchdogged session must accept the next prompt")
     }
 
-    // MARK: - Attach and replay (item 1.5, invariant I6)
+    // MARK: - Attach and replay
 
     func testAttachAfterDisconnectReplaysOnlyTheTail() throws {
         let port = try startBridge(script: agentScript())
@@ -529,7 +529,7 @@ final class BridgeProtocolTests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.7)   // let any duplicate arrive before we count
 
         XCTAssertEqual(client.received(method: "bridge/turn_ended").count, 1,
-                       "invariant I8 is EXACTLY one turn_ended per accepted turn")
+                       "EXACTLY one turn_ended per accepted turn")
         let methods = client.allNotifications.map(\.method)
         XCTAssertEqual(methods.last, "bridge/session_ended",
                        "nothing may be logged after the session's terminal entry; got \(methods)")
@@ -577,7 +577,7 @@ final class BridgeProtocolTests: XCTestCase {
                        + "bridge's whole lifetime, each retaining an NWConnection")
     }
 
-    // MARK: - Permissions (item 1.4, section 4.4)
+    // MARK: - Permissions
 
     private static let permissionPromptBody = """
           printf '%s\\n' '{"jsonrpc":"2.0","id":900,"method":"session/request_permission","params":{"sessionId":"sess-1","toolCall":{"toolCallId":"call-1","title":"Edit main.swift"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]}}'
@@ -671,7 +671,7 @@ final class BridgeProtocolTests: XCTestCase {
             asked.count > 0
         }
         XCTAssertEqual(asked.first, "perm-1")
-        // I6: the gate must arrive AFTER the transcript it belongs to.
+        // The gate must arrive AFTER the transcript it belongs to.
         XCTAssertFalse(second.allNotifications.isEmpty,
                        "replay must have been delivered before the permission re-issue")
     }

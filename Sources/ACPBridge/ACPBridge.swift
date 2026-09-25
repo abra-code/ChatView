@@ -12,9 +12,8 @@
 // permissions, the end - lands in the seq-ordered log. A turn runs happily with zero clients
 // attached. That IS the remote-control semantic.
 //
-// Read section 5's invariants before editing. I5 (one critical section per append), I6
-// (attach ordering), and I8 (every turn gets exactly one turn_ended) are each load-bearing
-// and each easy to break with a well-meaning refactor.
+// Three invariants are load-bearing: one critical section per append, attach ordering, and
+// exactly one turn_ended per turn. Each is easy to break with a well-meaning refactor.
 
 #if os(macOS)
 
@@ -315,7 +314,7 @@ package final class ACPBridge: @unchecked Sendable {
         connection.sendResult(id: messageID, result: ["sessions": rows])
     }
 
-    // MARK: - Attach (invariant I6)
+    // MARK: - Attach
 
     private func handleAttach(_ connection: BridgeClientConnection,
                               messageID: JSONRPCID,
@@ -369,7 +368,7 @@ package final class ACPBridge: @unchecked Sendable {
         reissuePendingPermissions(to: connection, sessionID: sessionID)
     }
 
-    // MARK: - Turns (invariant I8)
+    // MARK: - Turns
 
     private func handlePrompt(_ connection: BridgeClientConnection,
                               messageID: JSONRPCID,
@@ -406,7 +405,7 @@ package final class ACPBridge: @unchecked Sendable {
         ])
 
         // A hung agent would otherwise leave activeTurn set forever: no turn_ended for the
-        // client (which I9 forbids it from inventing) and -32002 on every later prompt, i.e. a
+        // client (which must never be invented) and -32002 on every later prompt, i.e. a
         // session wedged until the bridge restarts. Off by default.
         if config.turnTimeoutSeconds > 0 {
             let limit = config.turnTimeoutSeconds
@@ -416,7 +415,7 @@ package final class ACPBridge: @unchecked Sendable {
                     return
                 }
                 self.logger.log("acp-bridge: turn \(turn) of '\(sessionID)' exceeded \(limit)s; ending it", .warning)
-                // Through finishTurn, so I8's winner check makes a late real answer a no-op.
+                // Through finishTurn, so the winner check makes a late real answer a no-op.
                 self.finishTurn(sessionID: sessionID, turn: turn, stopReason: "error")
             }
         }
@@ -434,7 +433,7 @@ package final class ACPBridge: @unchecked Sendable {
                 stopReason = "error"
                 self.logger.log("acp-bridge: turn \(turn) of '\(sessionID)' failed: \(error)", .warning)
             }
-            // I8: exactly one turn_ended per accepted turn, on every path. A client whose store
+            // Exactly one turn_ended per accepted turn, on every path. A client whose store
             // never sees the terminal messageEnd keeps its composer disabled forever.
             self.finishTurn(sessionID: sessionID, turn: turn, stopReason: stopReason)
         }
@@ -442,7 +441,7 @@ package final class ACPBridge: @unchecked Sendable {
 
     /// Logs the one terminal entry for `turn`, if this caller is the one that ended it.
     ///
-    /// I8 is "exactly one turn_ended per accepted turn", and several paths race to satisfy it:
+    /// The rule is "exactly one turn_ended per accepted turn", and several paths race to satisfy it:
     /// the prompt task resolving, the agent dying, a log overflow. `endTurn` returns true to
     /// exactly one of them. Before that, agent death logged a turn_ended AND the prompt task's
     /// failing request logged a second one - which arrived after session_ended.
@@ -651,7 +650,7 @@ package final class ACPBridge: @unchecked Sendable {
         }
     }
 
-    // MARK: - Agent death (invariant I8)
+    // MARK: - Agent death
 
     private func handleAgentExit(status: Int32?, stderrTail: String) {
         let live = store.liveSessionIDs()
@@ -662,14 +661,14 @@ package final class ACPBridge: @unchecked Sendable {
 
         for sessionID in live {
             // endSession ends the in-flight turn and resolves pending permissions first; see
-            // its comment for why that order is invariant I8 rather than a preference.
+            // its comment for why that order is required, not a preference.
             endSession(sessionID: sessionID, reason: "agent_exit", detail: detail)
         }
     }
 
     /// Ends a session, always after ending any turn it still has in flight.
     ///
-    /// The ordering is invariant I8 and it is not cosmetic: a client keys its streaming state
+    /// The ordering is required and it is not cosmetic: a client keys its streaming state
     /// off the terminal messageEnd, so a session that ends with a turn still open leaves the
     /// composer disabled with no way back. This is also why `markEnded` comes after
     /// `finishTurn` - marking first would clear activeTurn and there would be nothing left to

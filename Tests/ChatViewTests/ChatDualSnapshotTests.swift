@@ -1,8 +1,8 @@
 // Tests/ChatViewTests/ChatDualSnapshotTests.swift
 //
 // A developer snapshot harness (NOT a CI assertion): renders a synthesized dual-alignment
-// transcript to a PNG via ImageRenderer, for eyeballing the layout during P4/P5 before the
-// local-p2p transport (P6) exists. Gated on the CHAT_SNAPSHOT env var so a normal test run
+// transcript to a PNG via ImageRenderer, for eyeballing the layout without the
+// local-p2p transport. Gated on the CHAT_SNAPSHOT env var so a normal test run
 // skips it. Run with: CHAT_SNAPSHOT=<dir> swift test --filter ChatDualSnapshotTests
 
 import XCTest

@@ -937,7 +937,7 @@ private fun ToolCallDetail(call: ToolCallModel, showsDiff: Boolean, find: RowFin
         }
         val diff = call.diff
         if (showsDiff && diff != null) {
-            // No DiffView on Android (it is not ported, and the remote-agent plan says not to build one here), so a
+            // No DiffView on Android (it is not ported, deliberately), so a
             // diff renders as its resulting text under the path - readable, and honest about what it is.
             Text(
                 diff.path,

@@ -1,6 +1,6 @@
 // Tests/ChatViewTests/LocalP2PTransportTests.swift
 //
-// P6 tests for the scripted local-p2p transport: it seeds the group / people conversation with the
+// Tests for the scripted local-p2p transport: it seeds the group / people conversation with the
 // full v2 vocabulary, answers a user send with a delivery ladder + a peer reply, honors
 // reaction / edit / delete commands, and serves synthetic paged history that terminates. Driven at
 // stepMs 0 so the seed is deterministic (the ambient "little life" is paced-mode only). A background

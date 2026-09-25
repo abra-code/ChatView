@@ -1285,7 +1285,7 @@ public enum ChatEvent: Sendable {
     /// The store forwards it as one `.resumeCheckpoint` host event; it is not a transcript
     /// item and never appears in `items`. Emitted only at turn boundaries, where the
     /// transcript is quiescent, so that "what the host has stored" and "this cursor" describe
-    /// the same instant; see the acp-remote plan's section 4.2a.
+    /// the same instant.
     ///
     /// REQUIRES `ChatConfiguration.emitsEntryEvents`. A cursor is only meaningful next to the
     /// transcript it was minted against, and `.entry` is how that transcript reaches the host,
@@ -1294,7 +1294,7 @@ public enum ChatEvent: Sendable {
     case resumeCheckpoint(sessionID: String, afterSeq: Int)
 
     // --- P2P (v2) additive vocabulary. Existing (streaming / agentic) transports never
-    //     emit these; the store routes them in P3. All are transport -> store.
+    //     emit these; the store routes them. All are transport -> store.
     case messageReceived(ChatMessage)                              // insert/UPSERT a complete message by id
     case messageIDConfirmed(localID: String, serverID: String)     // re-key the optimistic item to its server id
     case messageStatusChanged(itemID: String, status: MessageStatus)

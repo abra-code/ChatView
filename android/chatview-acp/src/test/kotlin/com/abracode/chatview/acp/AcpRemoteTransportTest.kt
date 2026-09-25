@@ -231,7 +231,7 @@ class AcpRemoteTransportTest {
         h.collector.waitFor("connected") { h.collector.log().contains("state:connected") }
 
         assertEquals(
-            "I6: the session is announced before anything else can arrive",
+            "the session is announced before anything else can arrive",
             listOf("state:connecting", "ready:sess-1", "info:sess-1:resumed=false", "state:connected"),
             h.collector.log().take(4),
         )
@@ -277,7 +277,7 @@ class AcpRemoteTransportTest {
             h.collector.log().any { it.startsWith("error:false:") }
         }
         assertTrue(
-            "I1: the watchdog closes the SOCKET; racing the request against a timeout deadlocks",
+            "the watchdog closes the SOCKET; racing the request against a timeout deadlocks",
             h.factory.socket(0)?.isClosed() == true,
         )
         h.transport.stop()
@@ -289,7 +289,7 @@ class AcpRemoteTransportTest {
         h.transport.start()
         h.collector.waitFor("connected") { h.collector.log().contains("state:connected") }
 
-        // I1's other half: the watchdog must be RETIRED on success. Without that it closes every healthy
+        // The watchdog's other half: it must be RETIRED on success. Without that it closes every healthy
         // connection once the timeout elapses, which in production looks like the agent dropping the user
         // mid-conversation.
         delay(700)
@@ -480,7 +480,7 @@ class AcpRemoteTransportTest {
 
         bridge.pushAt(socket, 1, "session/update", agentChunk("once"))
         h.collector.waitFor("the first delivery") { h.collector.log().any { it.endsWith(":once") } }
-        // At-least-once delivery plus idempotent processing (I7): re-delivery must be a no-op.
+        // At-least-once delivery plus idempotent processing: re-delivery must be a no-op.
         bridge.pushAt(socket, 1, "session/update", agentChunk("once"))
         delay(100)
         assertEquals(
@@ -522,7 +522,7 @@ class AcpRemoteTransportTest {
         }
         assertEquals("the reattach must resume from lastSeq, not from 0", 1, bridge.attachCursor())
         assertTrue(h.collector.log().contains("state:reconnecting"))
-        // I9: the drop itself must NOT have ended the turn - only the replayed turn_ended does.
+        // The drop itself must NOT have ended the turn - only the replayed turn_ended does.
         h.collector.waitFor("the replayed turn end", timeoutMs = 10_000) {
             h.collector.log().any { it.startsWith("end:") }
         }
@@ -621,7 +621,7 @@ class AcpRemoteTransportTest {
 
         h.collector.waitFor("the reconnect", timeoutMs = 10_000) { h.factory.sockets().size > 1 }
         val second = h.factory.socket(1)!!
-        // I3: Stop must still stop, even when it was pressed with no connection.
+        // Stop must still stop, even when it was pressed with no connection.
         h.collector.waitFor("the latched cancel to reach the wire", timeoutMs = 10_000) {
             second.frames("session/cancel").isNotEmpty()
         }

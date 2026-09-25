@@ -1,6 +1,6 @@
 package com.abracode.chatview
 
-// Phase 4 of the remote-agent plan on device: the surfaces a phone needs to actually OPERATE an agent session -
+// On device: the surfaces a phone needs to actually OPERATE an agent session -
 // the permission gate (without it a remote agent parks forever), the tool-call card, and the thought fold. The
 // JVM suites cover the store routing; these cover what a thumb can reach.
 

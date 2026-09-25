@@ -489,7 +489,7 @@ public struct ChatView: View {
         case .sessionEvent(let event):
             SessionEventRow(event: event, find: store.find.ranges(for: event.id, field: .caption))
         case .memberEvent, .callEvent, .file:
-            // P2P (v2) rows (member / call captions, file / voice items) are built in P6.
+            // P2P (v2) rows (member / call captions, file / voice items) are built by the dual transcript.
             // No v1 document produces these items, so the placeholder never renders for v1.
             EmptyView()
         }

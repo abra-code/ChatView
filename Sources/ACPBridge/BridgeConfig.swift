@@ -2,10 +2,9 @@
 //
 // The bridge's configuration file, and the token bootstrap that goes with it.
 //
-// Read section 4.6 of the remote-agent plan before changing anything here. The threat model
-// is blunt: this token IS remote code execution on the bridge host, because an ACP agent
-// runs tools there. That is why the default bind address is loopback and why the token file
-// is 0600.
+// The threat model is blunt: this token IS remote code execution on the bridge host, because
+// an ACP agent runs tools there. That is why the default bind address is loopback and why the
+// token file is 0600.
 
 #if os(macOS)
 

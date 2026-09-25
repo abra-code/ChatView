@@ -8,8 +8,8 @@
 // absence, the stderr tail carried into a launch-failure message, SIGKILL escalation for
 // an agent that traps SIGTERM, and the .sessionInfo identity event.
 //
-// Every drain is deadline-bounded: a regression in the startup watchdog (see the plan's
-// deadlock note - a task group racing connection.request never returns) must fail these
+// Every drain is deadline-bounded: a regression in the startup watchdog (the known
+// deadlock - a task group racing connection.request never returns) must fail these
 // tests, not hang the suite.
 
 #if os(macOS)
@@ -93,8 +93,8 @@ final class ChatACPLaunchTests: XCTestCase {
     /// Starts the transport CONCURRENTLY with the drain, and returns the events that arrive
     /// until `isDone` matches (that event included) or `deadline` elapses.
     ///
-    /// Starting concurrently is what makes the deadline load-bearing. The deadlock the plan
-    /// warns about - a throwing task group racing ACPConnection.request, which ignores
+    /// Starting concurrently is what makes the deadline load-bearing. The deadlock to guard
+    /// against - a throwing task group racing ACPConnection.request, which ignores
     /// cancellation - hangs INSIDE start(), so `await transport.start()` before the drain
     /// would hang the whole suite no matter how the drain is bounded (SwiftPM applies no
     /// per-test timeout). The event stream is unbounded-buffered, so nothing yielded during
@@ -253,7 +253,7 @@ final class ChatACPLaunchTests: XCTestCase {
         let script = try writeAgentScript(Self.fakeAgent(prologue: "sleep 1"))
         let transport = try makeTransport(["command": [script.path]])
         // Pin the resolved value too: a slow agent coming up would also pass against a
-        // sneaked-in default timeout, so the property the plan actually fixes ("absent means
+        // sneaked-in default timeout, so the property that matters ("absent means
         // NO timeout") has to be asserted directly.
         XCTAssertEqual(transport.startupTimeout, 0, "an absent startupTimeoutSeconds must arm no watchdog")
         let events = await startAndDrain(transport, until: Self.isReady)

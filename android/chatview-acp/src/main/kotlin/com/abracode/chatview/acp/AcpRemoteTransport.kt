@@ -7,14 +7,14 @@ package com.abracode.chatview.acp
 // is not the session. A socket can drop and come back many times inside one conversation, and the agent keeps
 // working the whole time. So:
 //
-//  - A turn is NEVER ended because the socket died (invariant I9). A dropped socket says nothing about a turn that
+//  - A turn is NEVER ended because the socket died. A dropped socket says nothing about a turn that
 //    is still running bridge-side; the truth arrives with the replay. The composer is gated by connection state.
 //  - Every transcript id is derived from the bridge's sequence number, so two devices - and the same
 //    device after a restart - render byte-identical ids without any reconciliation protocol.
-//  - `lastSeq` advances only AFTER an entry is fully processed (invariant I7), so a reattach asks for exactly what
+//  - `lastSeq` advances only AFTER an entry is fully processed, so a reattach asks for exactly what
 //    was missed. At-least-once delivery plus idempotent processing.
 //
-// The reconnect loop lives here rather than in AcpRemoteConnection: a connection object is single-use (I2), and
+// The reconnect loop lives here rather than in AcpRemoteConnection: a connection object is single-use, and
 // this owns the policy for making new ones. The Swift file is normative for anything left unstated here.
 
 import com.abracode.chatview.AgentSessionInfo
@@ -151,7 +151,7 @@ class AcpRemoteTransport(
 
     /**
      * Stop pressed while the socket was down. There is no turn to cancel locally - it is running bridge-side - so
-     * the intent is latched and sent after the next attach, but only if that same turn is still live (I3).
+     * the intent is latched and sent after the next attach, but only if that same turn is still live.
      */
     private var pendingCancel: Int? = null
 
@@ -343,7 +343,7 @@ class AcpRemoteTransport(
         }.build()
         connection.adopt(sockets.newWebSocket(request, connection.listener()))
 
-        // I1: the watchdog closes the CONNECTION, it does not race the request. Racing an await against a timeout
+        // The watchdog closes the CONNECTION, it does not race the request. Racing an await against a timeout
         // deadlocked the stdio transport, and the same reasoning applies verbatim to a socket.
         val generation = synchronized(lock) { ++handshakeGeneration }
         val watchdog = if (handshakeTimeout > 0) {
@@ -419,7 +419,7 @@ class AcpRemoteTransport(
     }
 
     /**
-     * Creates or attaches to the session, in the order invariant I6 requires: the session is announced BEFORE any
+     * Creates or attaches to the session, in the order attaching requires: the session is announced BEFORE any
      * replayed event, so the store leaves its unconfigured state first.
      */
     private suspend fun establishSession(connection: AcpRemoteConnection, isReconnect: Boolean) {
@@ -566,7 +566,7 @@ class AcpRemoteTransport(
         if (!shouldReconnect) {
             return
         }
-        // I9: the socket dying says NOTHING about the turn, which is still running bridge-side. Never synthesize a
+        // The socket dying says NOTHING about the turn, which is still running bridge-side. Never synthesize a
         // turn end here - the composer is gated by connection state and the truth arrives with the replay.
         emit(ChatEvent.ConnectionStateChanged(ChatConnectionState.RECONNECTING))
         scheduleReconnect()
@@ -827,7 +827,7 @@ class AcpRemoteTransport(
             logger.log("acp-remote: dropping '$method' with no seq", ChatLogLevel.WARNING)
             return
         }
-        // I7: process first, advance lastSeq after. A cursor ahead of what was processed loses content on the next
+        // Process first, advance lastSeq after. A cursor ahead of what was processed loses content on the next
         // attach.
         if (synchronized(lock) { seq <= lastSeq }) {
             return

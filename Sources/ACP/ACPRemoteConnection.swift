@@ -10,11 +10,11 @@
 //
 // Two invariants carried over from the stdio transport, both learned the hard way:
 //
-// I1 - a handshake watchdog must close the SOCKET, never race the request. Racing an await
-//      against a timeout in a task group deadlocks; closing the transport underneath the
-//      pending continuation makes it throw through the normal error path.
-// I2 - close-fails-everything, exactly once. A connection object is single-use: one per
-//      attempt. Reconnect logic lives OUTSIDE it, in the transport.
+// - a handshake watchdog must close the SOCKET, never race the request. Racing an await
+//   against a timeout in a task group deadlocks; closing the transport underneath the
+//   pending continuation makes it throw through the normal error path.
+// - close-fails-everything, exactly once. A connection object is single-use: one per
+//   attempt. Reconnect logic lives OUTSIDE it, in the transport.
 
 import Foundation
 import ChatView
@@ -206,7 +206,7 @@ final class ACPRemoteConnection: @unchecked Sendable, ACPRemoteSocketDelegate {
             return next
         }
         // The continuation deliberately ignores task cancellation: closing the socket is what
-        // resolves it (I1/I2). A cancellation-aware wait here would let a caller walk away
+        // resolves it. A cancellation-aware wait here would let a caller walk away
         // while the bridge still owes an answer, and the pending map would leak.
         return try await withCheckedThrowingContinuation { continuation in
             let refused: Bool = lock.withLock {
@@ -239,7 +239,7 @@ final class ACPRemoteConnection: @unchecked Sendable, ACPRemoteSocketDelegate {
         socket?.sendText(text)
     }
 
-    /// Closes once and fails every pending request (I2). Idempotent: the socket's own close
+    /// Closes once and fails every pending request. Idempotent: the socket's own close
     /// callback and an explicit close race constantly, and only one of them may notify.
     func close(error: (any Error)? = nil) {
         let teardown: (ran: Bool, socket: (any ACPRemoteSocket)?, ping: Task<Void, Never>?,

@@ -7,17 +7,17 @@
 // from it: the connection is not the session. A socket can drop and come back many times
 // inside one conversation, and the agent keeps working the whole time. So:
 //
-//  - A turn is NEVER ended because the socket died (invariant I9). A dropped socket says
+//  - A turn is NEVER ended because the socket died. A dropped socket says
 //    nothing about a turn that is still running bridge-side; the truth arrives with the
 //    replay. The composer is gated by connection state instead.
 //  - Every transcript id is derived from the bridge's sequence number, so two
 //    devices - and the same device after a restart - render byte-identical ids without any
 //    reconciliation protocol.
-//  - `lastSeq` advances only AFTER an entry is fully processed (invariant I7), so a reattach
+//  - `lastSeq` advances only AFTER an entry is fully processed, so a reattach
 //    asks for exactly what was missed. At-least-once delivery plus idempotent processing.
 //
 // The reconnect loop lives here rather than in ACPRemoteConnection: a connection object is
-// single-use (I2), and this owns the policy for making new ones.
+// single-use, and this owns the policy for making new ones.
 
 import Foundation
 import ChatView
@@ -64,7 +64,7 @@ final class ACPRemoteTransport: ChatTransport, @unchecked Sendable {
 
     /// Stop pressed while the socket was down. There is no turn to cancel locally - it is
     /// running bridge-side - so the intent is latched and sent after the next attach, but only
-    /// if that same turn is still live (invariant I3, re-homed for a network).
+    /// if that same turn is still live, re-homed for a network.
     private var pendingCancel: Int?
     /// The highest turn the bridge has told us ended. `session/prompt` learns its turn number
     /// only from the reply, so a turn that ends before that reply lands would otherwise be
@@ -297,7 +297,7 @@ final class ACPRemoteTransport: ChatTransport, @unchecked Sendable {
         }
         connection.attach(socket: socketFactory.makeSocket(url: url, headers: headers, delegate: connection))
 
-        // I1: the watchdog closes the CONNECTION, it does not race the request. Racing an
+        // The watchdog closes the CONNECTION, it does not race the request. Racing an
         // await against a timeout in a task group deadlocks - this was proven painfully in the
         // stdio transport and the same reasoning applies verbatim to a socket.
         let generation = lock.withLock { () -> Int in
@@ -351,7 +351,7 @@ final class ACPRemoteTransport: ChatTransport, @unchecked Sendable {
         }
     }
 
-    /// Creates or attaches to the session, in the order invariant I6 requires: the session is
+    /// Creates or attaches to the session, in the order attaching requires: the session is
     /// announced BEFORE any replayed event, so the store leaves its unconfigured state first.
     private func establishSession(on connection: ACPRemoteConnection, isReconnect: Bool) async throws {
         let known = lock.withLock { sessionID }
@@ -495,7 +495,7 @@ final class ACPRemoteTransport: ChatTransport, @unchecked Sendable {
         guard shouldReconnect else {
             return
         }
-        // I9: the socket dying says NOTHING about the turn, which is still running bridge-side.
+        // The socket dying says NOTHING about the turn, which is still running bridge-side.
         // Never synthesize a turn end here - the composer is gated by connection state and the
         // truth arrives with the replay.
         eventSink.yield(.connectionStateChanged(.reconnecting))
@@ -752,7 +752,7 @@ final class ACPRemoteTransport: ChatTransport, @unchecked Sendable {
             logger.log("acp-remote: dropping '\(method)' with no seq", .warning)
             return
         }
-        // I7: process first, advance lastSeq after. A cursor ahead of what was processed loses
+        // Process first, advance lastSeq after. A cursor ahead of what was processed loses
         // content on the next attach.
         let alreadySeen: Bool = lock.withLock { seq <= lastSeq }
         if alreadySeen {
