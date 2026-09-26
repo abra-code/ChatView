@@ -59,6 +59,27 @@ cd Examples/ChatViewDemoiOS  && xcodegen generate && open ChatViewDemoiOS.xcodep
 
 The generated `.xcodeproj` is gitignored; the `project.yml` beside it is the source of truth. Original three screens: People (a 1:1 `local-p2p` session), Group (the four-participant `local-p2p` scenario with member / call events), and ReadOnly (a restored group transcript, no composer). People / Group inject the transport config in code (`{ "protocol": "local-p2p", "transport": { "scenario": ... } }`), so nothing is declared in static UI data. It is the Apple twin of the Kotlin `android/demo` module.
 
+## Local agent sessions (`acp`)
+
+The `acp` transport launches an ACP agent as a subprocess (newline-delimited JSON-RPC over stdio), so it is macOS-only. It runs `initialize` (advertising no file-system or terminal services), opens a session with `session/new`, and maps the session's updates onto the transcript and the agentic surfaces.
+
+```json
+{ "protocol": "acp",
+  "transport": { "command": ["opencode", "acp"], "cwd": "~/src/app",
+                 "sessionConfig": { "mode": "plan" } } }
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `command` | REQUIRED | the agent's argv; a bare name is found on `env`'s `PATH`, else the host's |
+| `cwd` | host's current directory | the session root, sent in `session/new`; `~` expands, a relative path is anchored to the host's current directory |
+| `env` | `{}` | string values merged over the inherited environment |
+| `mcpServers` | `[]` | MCP server declarations, passed to the agent in `session/new` as they are |
+| `startupTimeoutSeconds` | none | stops an agent that is not ready in time; absent or `0` waits indefinitely, since a local model may take minutes to load |
+| `sessionConfig` | none | option id to value, set right after `session/new` and before the session is ready |
+
+**`sessionConfig` is a requirement, not a preference.** The typical value is a permission mode. Each option is set with `session/set_config_option`, or the spec's `session/set_mode` / `session/set_model` when the agent lacks it, and the session starts only when the agent took every value. A value the agent does not offer, a refused request, or a different value reported back fails the start with an error that says which. An agent that accepted a restriction silently while running without it would be worse than no session. Options the user changes later, from the status line's menus, are not held to this: a refused change is reported in the transcript and the session goes on.
+
 ## Remote agent sessions (`acp-remote`)
 
 The `acp` transport spawns an agent as a subprocess, so it is macOS-only. `acp-remote` owns no process, only a WebSocket, and runs everywhere ChatView does - including iOS. The agent lives on another machine and the phone becomes a remote control for it.
