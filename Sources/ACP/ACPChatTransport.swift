@@ -10,7 +10,8 @@
 // Lifecycle: start() launches the agent, runs `initialize` (advertising NO fs /
 // terminal capabilities - this host is a chat surface, not an editor, so the agent
 // must not assume one), opens a session with `session/new` (cwd + declared MCP
-// servers), and emits sessionReady. A `.prompt` command becomes one `session/prompt`
+// servers), sets the options the host asked the session to start with
+// (`sessionConfig`), and emits sessionReady. A `.prompt` command becomes one `session/prompt`
 // turn; during the turn the agent streams `session/update` notifications which demux
 // onto ChatEvents through a fixed mapping, and the turn ends when the prompt
 // request resolves with a stopReason. `.cancel` sends the `session/cancel`
@@ -46,6 +47,7 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
     private let cwd: String
     private let mcpServers: [[String: Any]]
     private let env: [String: String]
+    private let initialConfig: [(optionID: String, value: String)]   // transport.sessionConfig, sorted by option id
     let startupTimeout: TimeInterval                  // internal so tests can pin the "absent means none" default
 
     private let lock = NSLock()
@@ -94,12 +96,26 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
     /// passed through verbatim), `env` (string-to-string map, merged over the inherited
     /// environment; `PATH` here governs bare-name resolution of `command[0]`),
     /// `startupTimeoutSeconds` (number; absent or <= 0 means NO timeout - the bundled
-    /// local agent may legitimately take minutes to load a large model).
+    /// local agent may legitimately take minutes to load a large model), `sessionConfig`
+    /// (object of option id to value, e.g. {"mode": "plan"}: the state the session must
+    /// start in, set right after session/new; a value the agent does not take fails the
+    /// start, see applyInitialConfig).
     init(config: ChatTransportConfig, logger: any ChatLogger) throws {
         guard let command = config.stringArray("command"), !command.isEmpty else {
             throw ACPConnectionError(code: nil, message: "transport.command (a non-empty string array) is required for protocol \"acp\"")
         }
         self.command = command
+        // Refused outright when malformed rather than dropped like a bad env value: it
+        // usually carries a restriction (a permission mode), and starting without it
+        // would run the agent freer than the host asked for.
+        if let raw = config.settings["sessionConfig"], !(raw is NSNull) {
+            guard let strings = raw as? [String: String] else {
+                throw ACPConnectionError(code: nil, message: "transport.sessionConfig must be an object of option ids to string values")
+            }
+            self.initialConfig = strings.sorted { $0.key < $1.key }.map { (optionID: $0.key, value: $0.value) }
+        } else {
+            self.initialConfig = []
+        }
         // ACP requires the session cwd to be an ABSOLUTE path: agents resolve a relative
         // path against their own working directory (a literal "~" reached OpenCode as
         // "<cwd>/~" and failed session/new with "Invalid path"). Expand ~ and anchor
@@ -222,59 +238,17 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
             lock.withLock { supportsPrime = (agentCaps?["sessionPrime"] as? Bool) ?? false }
             let authMethods = (initResult["authMethods"] as? [[String: Any]]) ?? []
 
+            let session: [String: Any]
+            let sessionID: String
             do {
-                let session = try await connection.request("session/new", [
+                session = try await connection.request("session/new", [
                     "cwd": cwd,
                     "mcpServers": mcpServers,
                 ])
-                guard let sessionID = session["sessionId"] as? String else {
+                guard let newID = session["sessionId"] as? String else {
                     throw ACPConnectionError(code: nil, message: "session/new returned no sessionId")
                 }
-                let options = ACPWire.parseConfigOptions(session)
-                // Publish the session AND flush a prime that arrived before it existed (the
-                // store primes on attach, BEFORE start() runs) in ONE lock acquisition:
-                // once sessionID is visible, a live-session primeHistory registers its own
-                // primeTask directly - a separate flush lock could then overwrite it with
-                // the older stash and put two primes on the wire. Registered as primeTask
-                // so a prompt racing in right after sessionReady chains behind it.
-                // The same acquisition also settles the race with the startup watchdog, in the
-                // only place it can be settled: the watchdog latches startupTimedOut under
-                // this lock, so whichever side takes it first wins outright. Publishing the
-                // session first and marking startup finished later (in the defer) would leave
-                // a window where the watchdog stops the connection AFTER sessionReady - and
-                // because that teardown runs with notify: false, the user would be left with a
-                // window that looks ready over an agent that is gone.
-                let lostToWatchdog = lock.withLock { () -> Bool in
-                    if startupTimedOut {
-                        return true
-                    }
-                    startupFinished = true
-                    self.sessionID = sessionID
-                    self.sessionOptions = options
-                    if let stash = pendingPrime {
-                        let stashedCondense = pendingCondense
-                        pendingPrime = nil
-                        pendingCondense = nil
-                        if !stash.isEmpty { hasPrimedOnce = true }
-                        primeTask = Task { [weak self] in
-                            await self?.sendPrime(stash, condense: stashedCondense)
-                        }
-                    }
-                    return false
-                }
-                if lostToWatchdog {
-                    throw ACPConnectionError(code: nil, message: "the startup watchdog stopped the agent")
-                }
-                eventSink.yield(.sessionReady(sessionID: sessionID, configOptions: options))
-                eventSink.yield(.sessionInfo(AgentSessionInfo(
-                    sessionId: sessionID,
-                    agentName: agentInfo?["name"] as? String,
-                    agentVersion: agentInfo?["version"] as? String,
-                    protocolVersion: negotiatedVersion,
-                    agentPid: connection.processID.map(Int.init),
-                    canLoadSession: (agentCaps?["loadSession"] as? Bool) ?? false,
-                    canPrime: (agentCaps?["sessionPrime"] as? Bool) ?? false,
-                    resumed: false)))
+                sessionID = newID
             } catch {
                 // A common session/new failure is an agent that requires auth first; name
                 // the advertised methods so that case is actionable (auth UX is a later
@@ -288,6 +262,53 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
                 let names = authMethods.compactMap { $0["id"] as? String ?? $0["name"] as? String }
                 throw ACPConnectionError(code: nil, message: "\(error). If the agent requires login, authenticate outside the chat element first (it advertises: \(names.joined(separator: ", ")))")
             }
+            // Outside the auth hint above: a refused option is not a login problem.
+            let options = try await applyInitialConfig(
+                connection: connection, sessionID: sessionID, offered: ACPWire.parseConfigOptions(session))
+            // Publish the session AND flush a prime that arrived before it existed (the
+            // store primes on attach, BEFORE start() runs) in ONE lock acquisition:
+            // once sessionID is visible, a live-session primeHistory registers its own
+            // primeTask directly - a separate flush lock could then overwrite it with
+            // the older stash and put two primes on the wire. Registered as primeTask
+            // so a prompt racing in right after sessionReady chains behind it.
+            // The same acquisition also settles the race with the startup watchdog, in the
+            // only place it can be settled: the watchdog latches startupTimedOut under
+            // this lock, so whichever side takes it first wins outright. Publishing the
+            // session first and marking startup finished later (in the defer) would leave
+            // a window where the watchdog stops the connection AFTER sessionReady - and
+            // because that teardown runs with notify: false, the user would be left with a
+            // window that looks ready over an agent that is gone.
+            let lostToWatchdog = lock.withLock { () -> Bool in
+                if startupTimedOut {
+                    return true
+                }
+                startupFinished = true
+                self.sessionID = sessionID
+                self.sessionOptions = options
+                if let stash = pendingPrime {
+                    let stashedCondense = pendingCondense
+                    pendingPrime = nil
+                    pendingCondense = nil
+                    if !stash.isEmpty { hasPrimedOnce = true }
+                    primeTask = Task { [weak self] in
+                        await self?.sendPrime(stash, condense: stashedCondense)
+                    }
+                }
+                return false
+            }
+            if lostToWatchdog {
+                throw ACPConnectionError(code: nil, message: "the startup watchdog stopped the agent")
+            }
+            eventSink.yield(.sessionReady(sessionID: sessionID, configOptions: options))
+            eventSink.yield(.sessionInfo(AgentSessionInfo(
+                sessionId: sessionID,
+                agentName: agentInfo?["name"] as? String,
+                agentVersion: agentInfo?["version"] as? String,
+                protocolVersion: negotiatedVersion,
+                agentPid: connection.processID.map(Int.init),
+                canLoadSession: (agentCaps?["loadSession"] as? Bool) ?? false,
+                canPrime: (agentCaps?["sessionPrime"] as? Bool) ?? false,
+                resumed: false)))
         } catch {
             // Name the timeout rather than the closed connection it produced, and carry the
             // agent's last stderr lines: /usr/bin/env's own "no such file or directory" and
@@ -643,6 +664,64 @@ final class ACPChatTransport: ChatTransport, @unchecked Sendable {
         } catch {
             eventSink.yield(.system(text: "Could not change \(optionID): \(error)"))
         }
+    }
+
+    /// Sets `transport.sessionConfig` on a new session, before it is published, and returns
+    /// the option list sessionReady should carry. Same methods as performSetConfigOption,
+    /// but every failure THROWS (failing the start) instead of becoming a system line: the
+    /// host asked the session to start in this state, typically a permission mode, and a
+    /// session the user can type into while the agent runs freer than asked is worse than
+    /// no session. So a value the agent does not offer, a refused request, and a setter
+    /// that answers with a different current value all fail. Internal for tests.
+    func applyInitialConfig(connection: ACPConnection, sessionID: String, offered: [SessionConfigOption]) async throws -> [SessionConfigOption] {
+        var options = offered
+        for (optionID, value) in initialConfig {
+            let option = options.first(where: { $0.id == optionID })
+            if let option, !option.options.isEmpty, !option.options.contains(where: { $0.value == value }) {
+                let choices = option.options.map(\.value).joined(separator: ", ")
+                throw ACPConnectionError(code: nil, message: "transport.sessionConfig asks for \(optionID) '\(value)', which the agent does not offer (it offers: \(choices))")
+            }
+            do {
+                let result = try await connection.request("session/set_config_option", [
+                    "sessionId": sessionID,
+                    "configId": optionID,
+                    "type": "select",
+                    "value": value,
+                ])
+                let refreshed = ACPWire.parseConfigOptions(result)
+                if !refreshed.isEmpty {
+                    options = refreshed
+                } else if let index = options.firstIndex(where: { $0.id == optionID }) {
+                    // Success with no list (the spec asks for one): the success is the
+                    // agent's answer, as for the fallback below.
+                    options[index].currentValue = value
+                }
+            } catch let error as ACPConnectionError where error.code == -32601 {
+                // The per-category fallback. Its confirmation is normally the agent's
+                // current_mode_update, but that notification reaches the store BEFORE
+                // sessionReady, which then replaces the option list and would show the old
+                // value. The request's success is the agent's answer here, so record it.
+                let target = option ?? SessionConfigOption(id: optionID, name: optionID, category: nil, currentValue: "", options: [])
+                guard let fallback = Self.fallbackSetter(for: target) else {
+                    throw ACPConnectionError(code: nil, message: "transport.sessionConfig asks for \(optionID) '\(value)', but the agent offers no way to set \(optionID)")
+                }
+                do {
+                    _ = try await connection.request(fallback.method, ["sessionId": sessionID, fallback.paramKey: value])
+                } catch {
+                    throw ACPConnectionError(code: nil, message: "could not set \(optionID) to '\(value)': \(error)")
+                }
+                if let index = options.firstIndex(where: { $0.id == optionID }) {
+                    options[index].currentValue = value
+                }
+            } catch {
+                throw ACPConnectionError(code: nil, message: "could not set \(optionID) to '\(value)': \(error)")
+            }
+            if let now = options.first(where: { $0.id == optionID }), now.currentValue != value {
+                throw ACPConnectionError(code: nil, message: "asked to set \(optionID) to '\(value)', the agent reports '\(now.currentValue)'")
+            }
+            logger.log("ACP: session starts with \(optionID) '\(value)'", .verbose)
+        }
+        return options
     }
 
     /// The spec-sketched per-category setters, used when the generic method is absent.
